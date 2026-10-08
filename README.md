@@ -2,9 +2,11 @@
 
 Portfolio project định hướng vị trí **Data Analyst Intern / Fresher**, tập trung vào Business Analytics, SQL, Power BI và các kết quả định lượng có thể kiểm chứng. Apache Spark và Machine Learning được sử dụng để thể hiện năng lực xử lý dữ liệu và dự đoán, nhưng không làm tăng độ phức tạp hệ thống nếu không tạo thêm giá trị phân tích.
 
-> **Trạng thái hiện tại:** Phase 0 — Project Planning & Environment (**đang chuẩn bị, chưa hoàn thành**).
+> **Trạng thái hiện tại:** Phase 0 — Project Planning & Environment (**đã hoàn tất phần chuẩn bị và xác minh kỹ thuật cơ bản, đang chờ người dùng xác nhận chốt Phase**).
 >
-> Chưa có pipeline, test, truy vấn phân tích hoặc mô hình nào được chạy. Việc kiểm tra môi trường đang chờ người dùng tự thực hiện và cung cấp output.
+> Môi trường và Spark Smoke Test đã được người dùng tự chạy thành công. Chưa kiểm thử pipeline dữ liệu BTS, đọc/ghi Parquet, unit tests, Power BI hoặc Machine Learning.
+
+**GitHub repository:** [NTS051205/Airline_operations_analytics](https://github.com/NTS051205/Airline_operations_analytics) — các file ban đầu đã xuất hiện trên branch `main` theo xác nhận của người dùng.
 
 ## 1. Business problem
 
@@ -83,27 +85,29 @@ ML là phần bổ sung kỹ thuật. Kết quả Business Analytics và dashboa
 
 | Thành phần | Lựa chọn | Trạng thái |
 |---|---|---|
-| Ngôn ngữ | Python | Chờ xác minh phiên bản cài trên máy |
-| Xử lý dữ liệu | Apache Spark / PySpark | Chưa cài hoặc kiểm tra |
-| Phân tích | Spark SQL | Dự kiến |
+| Hệ điều hành | Windows 11 | Đã xác minh bởi người dùng |
+| Ngôn ngữ | Python 3.11.9 | Đã xác minh trong `.venv` |
+| Java | Eclipse Temurin JDK 17.0.20.1 | Đã xác minh; `JAVA_HOME` được cấu hình đúng |
+| Xử lý dữ liệu | Apache Spark / PySpark 3.5.8 | Đã cài; Spark Smoke Test thành công |
+| Phân tích | Spark SQL | Đã xác minh truy vấn cơ bản trên DataFrame in-memory; chưa chạy dữ liệu BTS |
 | Lưu trữ | Apache Parquet | Dự kiến |
 | Machine Learning | Spark MLlib | Dự kiến Phase 5 |
 | Dashboard | Power BI | Dự kiến Phase 4 |
-| Tests | pytest | Dự kiến từ Phase cần validation |
-| Version control | Git / GitHub | Chờ xác minh Git local |
+| Tests | pytest 8.4.2 | Đã cài; chưa chạy unit tests |
+| Version control | Git / GitHub | Repository đã có file ban đầu trên branch `main` |
 
-### Phiên bản đề xuất, chưa được xác nhận
+### Phiên bản môi trường đã xác minh
 
-- Python 3.11.x.
-- Java 17 LTS.
-- PySpark 3.5.7.
-- pytest `>=8,<9`.
+- OS: Windows 11.
+- Python: 3.11.9.
+- Java: Eclipse Temurin JDK 17.0.20.1.
+- Virtual environment: `.venv`.
+- PySpark: 3.5.8.
+- pytest: 8.4.2.
 
-Đây là cấu hình thận trọng cho Spark chạy local trên Windows 11. Tài liệu chính thức của PySpark 3.5.7 cho biết phiên bản này hỗ trợ Python 3.8 trở lên và Java 8, 11 hoặc 17. Project chọn Java 17 và đề xuất Python 3.11 để có một tổ hợp hiện đại nhưng không cần chuyển sang kiến trúc hoặc tính năng Spark 4.x.
+Đây là cấu hình đã được người dùng xác minh cho Spark chạy local trên Windows 11. SparkSession, DataFrame API và Spark SQL cơ bản đã hoạt động với tổ hợp phiên bản trên. Kết quả này chỉ xác nhận môi trường Spark tối thiểu, không chứng minh pipeline dữ liệu của project đã hoạt động.
 
-Các phiên bản trên chỉ được chốt sau khi người dùng chạy checklist môi trường và gửi output. Không cài dependency trước bước xác minh này.
-
-Tham khảo: [PySpark 3.5.7 Installation](https://spark.apache.org/docs/3.5.7/api/python/getting_started/install.html).
+Tham khảo: [PySpark 3.5.8 Documentation](https://spark.apache.org/docs/3.5.8/api/python/).
 
 ## 5. Kiến trúc repository
 
@@ -114,7 +118,7 @@ airline_operations_analytics/
 ├── .gitignore          # Loại trừ môi trường local, dữ liệu và artifacts lớn
 ├── MASTER_PROMPT.md    # Quy tắc và phạm vi triển khai project
 ├── README.md           # Tài liệu project và trạng thái theo Phase
-└── requirements.txt    # Dependency tối thiểu được đề xuất, chưa cài đặt
+└── requirements.txt    # Dependency tối thiểu, đồng bộ với môi trường đã xác minh
 ```
 
 ### Cấu trúc dự kiến, chưa được tạo
@@ -173,7 +177,7 @@ Các kết quả chưa được người dùng chạy và cung cấp output ph�
 
 | Phase | Nội dung | Trạng thái |
 |---|---|---|
-| Phase 0 | Scope, cấu trúc tối thiểu, README, environment plan, requirements | **Đang thực hiện — chờ environment output và xác nhận** |
+| Phase 0 | Scope, cấu trúc tối thiểu, README, environment, requirements, Spark Smoke Test | **Sẵn sàng chốt — chờ người dùng xác nhận** |
 | Phase 1 | Data acquisition, schema profiling, data dictionary, quality findings | Chưa bắt đầu |
 | Phase 2 | Cleaning, validation, cleaned Parquet | Chưa bắt đầu |
 | Phase 3 | Spark SQL KPI, analytical tables, business findings | Chưa bắt đầu |
@@ -189,77 +193,79 @@ Không chuyển sang Phase tiếp theo khi chưa có xác nhận của người 
 - [x] Tech stack được giữ đúng phạm vi đã thống nhất.
 - [x] Cấu trúc repository tối thiểu và kiến trúc dự kiến đã được phân biệt rõ.
 - [x] README ghi rõ phần đã hoàn thành và phần dự kiến.
-- [x] Dependency tối thiểu đã được đề xuất nhưng chưa cài đặt.
+- [x] Dependency tối thiểu đã được cài và phiên bản thực tế đã được ghi nhận.
 - [x] `.gitignore` đã được chuẩn bị để tránh đưa dữ liệu và artifacts local lên Git.
-- [ ] Người dùng đã cung cấp output kiểm tra thư mục làm việc.
-- [ ] Người dùng đã cung cấp output phiên bản Python, Java, Git và trạng thái PySpark.
-- [ ] Tổ hợp phiên bản cuối cùng đã được xác nhận từ output thực tế.
+- [x] Người dùng đã xác nhận môi trường Windows 11 và virtual environment `.venv`.
+- [x] Người dùng đã cung cấp kết quả phiên bản Python, Java, PySpark và pytest.
+- [x] `JAVA_HOME` đã được người dùng xác nhận cấu hình đúng.
+- [x] SparkSession, DataFrame API, `df.count()` và Spark SQL cơ bản đã được người dùng smoke test thành công.
+- [x] GitHub repository đã có các file ban đầu trên branch `main`.
 - [ ] Người dùng đã xác nhận Phase 0 đạt yêu cầu.
 
-Phase 0 chưa hoàn thành cho đến khi các mục còn lại được người dùng kiểm tra và xác nhận.
+Phase 0 chưa được đánh dấu hoàn thành cho đến khi người dùng kiểm tra README và xác nhận chốt Phase.
 
-## 10. Environment checklist — người dùng tự chạy
+## 10. Kết quả xác minh Phase 0
 
-Chạy từng nhóm lệnh trong **PowerShell** tại thư mục project và gửi lại toàn bộ output. Các lệnh này chỉ đọc thông tin; chưa cài dependency và chưa chạy pipeline.
+### Environment
 
-### 10.1. Xác nhận thư mục và file hiện có
+| Hạng mục | Kết quả thực tế | Trạng thái |
+|---|---|---|
+| OS | Windows 11 | Verified |
+| Python | 3.11.9 | Verified |
+| Java | Eclipse Temurin JDK 17.0.20.1 | Verified |
+| `JAVA_HOME` | Đã cấu hình đúng | Verified |
+| Virtual environment | `.venv` | Verified |
+| PySpark | 3.5.8 | Verified |
+| pytest | 8.4.2 | Installed; unit tests not run |
 
-```powershell
-Get-Location
-Get-ChildItem -Force
-```
+### Spark Smoke Test
 
-### 10.2. Kiểm tra Python và pip
+| Kiểm tra | Kết quả thực tế |
+|---|---|
+| Khởi tạo SparkSession | Thành công |
+| Spark version | 3.5.8 |
+| DataFrame test data | 3 records |
+| `df.count()` | Trả về `3` |
+| Spark SQL | Thành công; trả về `AA`, `DL`, `UA` |
+| Dừng Spark | Chương trình kết thúc sau `spark.stop()` |
 
-```powershell
-python --version
-py -0p
-python -m pip --version
-where.exe python
-```
+Smoke Test xác nhận Python có thể khởi tạo SparkSession và thực hiện thao tác DataFrame/Spark SQL cơ bản. Test này không đọc dữ liệu BTS, không đọc/ghi Parquet và không chạy pipeline của project.
 
-### 10.3. Kiểm tra Java
+### Cảnh báo Windows đã quan sát
 
-```powershell
-java -version
-$env:JAVA_HOME
-where.exe java
-```
+- `winutils.exe not found`.
+- `Native Hadoop library unavailable`.
 
-### 10.4. Kiểm tra Git
+Hai cảnh báo không ngăn Smoke Test chạy thành công. Hiện chưa áp dụng workaround hoặc thêm dependency vì chưa có bằng chứng chúng gây lỗi cho phạm vi local của project. Cần đánh giá lại nếu đọc/ghi Parquet hoặc pipeline sau này thất bại.
 
-```powershell
-git --version
-git status --short
-```
+## 11. Những hạng mục chưa kiểm thử
 
-### 10.5. Kiểm tra PySpark mà không cài đặt
+- Đọc CSV thực tế từ BTS.
+- Kiểm tra schema và chất lượng dữ liệu BTS.
+- Đọc hoặc ghi Parquet.
+- Cleaning và validation pipeline.
+- Spark SQL KPI queries trên dữ liệu thực tế.
+- Unit tests bằng pytest.
+- Power BI analytical model và dashboard.
+- Feature engineering, model training và Machine Learning evaluation.
+- Processing-time benchmark.
 
-```powershell
-python -m pip show pyspark
-```
+Không có business metric, data-quality metric hoặc Machine Learning metric nào được ghi nhận ở Phase 0.
 
-Nếu lệnh báo không tìm thấy Python, Java, Git hoặc PySpark, giữ nguyên thông báo lỗi và gửi lại; chưa tự cài hoặc thay đổi cấu hình ở bước này.
+## 12. Phase 0 final checklist
 
-## 11. Chưa được chạy ở thời điểm hiện tại
+- [x] Business problem và business questions được mô tả.
+- [x] Scope MVP là tháng 01–03/2025.
+- [x] Kiến trúc dự kiến được phân biệt với thành phần đã triển khai.
+- [x] Environment versions được ghi nhận từ kết quả thực tế.
+- [x] Dependency versions được ghi nhận là PySpark 3.5.8 và pytest 8.4.2.
+- [x] Spark Smoke Test và phạm vi của test được ghi nhận.
+- [x] Cảnh báo Windows được ghi nhận mà không kết luận quá mức.
+- [x] Các hạng mục chưa kiểm thử được liệt kê rõ.
+- [x] Chưa ghi business hoặc ML metrics khi chưa có dữ liệu.
+- [x] GitHub repository và branch `main` được ghi nhận.
+- [ ] Người dùng xác nhận chốt Phase 0.
 
-Không chạy các lệnh sau cho đến khi output môi trường được xem xét và tổ hợp phiên bản được xác nhận:
+Sau khi người dùng xác nhận, README có thể đánh dấu Phase 0 là hoàn thành. Phase 1 chỉ bắt đầu khi có yêu cầu tiếp tục rõ ràng.
 
-- Tạo virtual environment.
-- Cài `requirements.txt`.
-- Khởi tạo SparkSession.
-- Tải dataset BTS.
-- Chạy script, pipeline hoặc test.
-- Git commit hoặc Git push.
-
-## 12. Phase 0 handoff
-
-Sau khi người dùng gửi output trong mục 10, bước tiếp theo vẫn thuộc **Phase 0**:
-
-1. Đối chiếu phiên bản Python, Java, Git và PySpark.
-2. Điều chỉnh `requirements.txt` nếu cần.
-3. Ghi kết quả xác minh thực tế vào README.
-4. Cung cấp hướng dẫn tạo môi trường và cài dependency để người dùng tự chạy.
-5. Chờ output cài đặt/kiểm tra và chỉ kết luận Phase 0 khi có bằng chứng.
-
-Không bắt đầu Phase 1 nếu chưa có yêu cầu tiếp tục rõ ràng.
+**Dừng tại đây:** không bắt đầu Phase 1, không tải dữ liệu và không chạy thêm test khi chưa có xác nhận của người dùng.
