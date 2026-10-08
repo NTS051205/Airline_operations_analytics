@@ -1,0 +1,39 @@
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and editor settings
+.env
+.env.*
+.idea/
+.vscode/
+
+# Raw, processed, and analytical data
+data/raw/
+data/processed/
+data/analytics/
+
+# Model artifacts and local experiment outputs
+models/
+artifacts/
+outputs/
+
+# Spark local runtime files
+spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Operating-system files
+Thumbs.db
+.DS_Store

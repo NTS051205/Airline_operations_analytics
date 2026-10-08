@@ -1,0 +1,6 @@
+# Phase 0 proposed dependencies.
+# Do not install until the local Python and Java versions have been verified.
+# Keep the dependency set minimal; add libraries only when a later Phase needs them.
+
+pyspark==3.5.8
+pytest>=8,<9
