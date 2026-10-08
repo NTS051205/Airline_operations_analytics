@@ -2,9 +2,69 @@
 
 Portfolio project định hướng vị trí **Data Analyst Intern / Fresher**, tập trung vào Business Analytics, SQL, Power BI và các kết quả định lượng có thể kiểm chứng. Apache Spark và Machine Learning được sử dụng để thể hiện năng lực xử lý dữ liệu và dự đoán, nhưng không làm tăng độ phức tạp hệ thống nếu không tạo thêm giá trị phân tích.
 
-> **Trạng thái hiện tại:** Phase 0 — Project Planning & Environment (**đã hoàn tất phần chuẩn bị và xác minh kỹ thuật cơ bản, đang chờ người dùng xác nhận chốt Phase**).
+> **Trạng thái hiện tại:** Phase 1 — Data Acquisition & Profiling (**profiling đã chạy thành công; tài liệu đang chờ project owner xác nhận để chốt Phase 1**).
+
+> Phase 1 profiler đã chạy thành công bằng PySpark 3.5.8 với exit code `0` trên ba CSV BTS January–March 2025. Kết quả đã xác minh gồm **1,645,503 records và 36 cột**. Phase 2 chưa bắt đầu.
+
+## Phase 1 — Verified profiling results
+
+Nguồn bằng chứng là `artifacts/phase1/profile_summary.json`, được tạo bởi lần chạy profiler thành công của project owner. Trong phần này:
+
+- **JSON direct** là số liệu được JSON cung cấp trực tiếp.
+- **Derived from JSON** là phép tính số học từ các số liệu trực tiếp; đây không phải một Spark check bổ sung.
+
+### Dataset coverage
+
+| Period | Records | Evidence |
+|---|---:|---|
+| January 2025 | 539,747 | JSON direct |
+| February 2025 | 504,884 | JSON direct |
+| March 2025 | 600,872 | JSON direct |
+| **January–March 2025** | **1,645,503** | **JSON direct** |
+
+Input có **36 cột**. Tổng ba tháng `539,747 + 504,884 + 600,872 = 1,645,503` là phép đối chiếu derived from JSON.
+
+### Flight status
+
+| Status | Records | Evidence |
+|---|---:|---|
+| Completed | 1,611,046 | JSON direct |
+| Canceled | 30,640 | JSON direct |
+| Diverted | 3,817 | JSON direct |
+
+Ba trạng thái cộng lại đúng 1,645,503 records. Đây là đối chiếu số lượng, không phải kết luận về hiệu quả vận hành.
+
+### Data-quality checks
+
+| Check | Result | Evidence |
+|---|---:|---|
+| Cast failures | 0 | JSON direct |
+| Exact duplicate groups / rows in groups / excess rows | 0 / 0 / 0 | JSON direct |
+| Candidate-key collision groups / rows in groups / excess rows | 0 / 0 / 0 | JSON direct |
+| Confirmed-invalid-rule violations | 0 | JSON direct |
+| Suspicious-business-rule violations | 0 | JSON direct |
+
+Không phát hiện violation trong **các rule đã cấu hình** không đồng nghĩa dữ liệu hoàn hảo. Zero cast failures xác nhận khả năng parse theo schema đã cấu hình, không chứng minh mọi giá trị đều đúng về mặt nghiệp vụ. Candidate key là khóa ứng viên của project, không phải primary key chính thức do BTS công bố.
+
+### Missingness and extreme value
+
+- Missing `ARR_DEL15`: **34,457** — JSON direct.
+- `30,640 canceled + 3,817 diverted = 34,457` — derived from JSON. Hai tổng số khớp nhau ở mức aggregate; điều này tự nó không chứng minh quan hệ row-by-row.
+- `CANCELLATION_CODE` và năm cột delay-cause là các trường có điều kiện. `NULL` ở các trường này không mặc định là lỗi.
+- Maximum `ARR_DELAY`: **3,407 phút** — JSON direct. Đây là giá trị cực đoan cần xem xét ở phase sau, chưa có bằng chứng để kết luận là dữ liệu sai.
+
+### Descriptive rate
+
+- Completed flights với `ARR_DEL15 = 1`: **317,266** — JSON direct.
+- Arrival Delay Rate among completed flights: `317,266 / 1,611,046 ≈ 19.69%` — derived from JSON.
+
+Mẫu số của tỷ lệ trên là **completed flights**, không phải toàn bộ raw records. Đây là thống kê mô tả từ profiling, chưa phải KPI business layer đã chốt.
+
+Chi tiết và limitations được ghi tại [Phase 1 Data Quality Report](docs/data_quality_report.md). Phase 1 đã hoàn thành về data acquisition và profiling; tài liệu đang chờ project owner xác nhận chốt phase. **Không có cleaning, Parquet pipeline, Power BI hay Machine Learning nào được xác nhận trong Phase 1.**
+
+> **Roadmap checkpoint:** Phase 0 đã hoàn thành; Phase 1 đã hoàn thành về profiling và đang chờ xác nhận chốt tài liệu; Phase 2 và các phase sau vẫn là kế hoạch, chưa bắt đầu.
 >
-> Môi trường và Spark Smoke Test đã được người dùng tự chạy thành công. Chưa kiểm thử pipeline dữ liệu BTS, đọc/ghi Parquet, unit tests, Power BI hoặc Machine Learning.
+> Phase 0 đã được người dùng xác nhận hoàn thành. Ba CSV BTS cho January–March 2025 và header 36 cột đã được xác minh từ output do người dùng cung cấp. Chưa có record count, data-quality result, business metric hoặc Machine Learning metric từ profiling.
 
 **GitHub repository:** [NTS051205/Airline_operations_analytics](https://github.com/NTS051205/Airline_operations_analytics) — các file ban đầu đã xuất hiện trên branch `main` theo xác nhận của người dùng.
 
@@ -33,7 +93,9 @@ Phân tích mô tả mối liên hệ trong dữ liệu; không diễn giải t�
 - **Định dạng nguồn dự kiến:** CSV tải trực tiếp từ BTS.
 - **Định dạng xử lý dự kiến:** Parquet.
 
-Chưa có dữ liệu nào được tải hoặc kiểm tra trong Phase 0. Tên cột, schema, kiểu dữ liệu, số dòng và chất lượng dữ liệu chỉ được xác nhận sau khi người dùng cung cấp file thực tế ở Phase 1.
+Ba file raw CSV đã được người dùng tải cho January, February và March 2025. Tên và thứ tự của 36 cột giống nhau giữa ba file. Logical types mới là schema contract cần kiểm chứng; số dòng, cast failures và chất lượng dữ liệu vẫn đang chờ người dùng chạy profiler.
+
+Acquisition evidence, file sizes và SHA-256 được ghi tại [Phase 1 Data Quality Report](docs/data_quality_report.md). Schema contract được ghi tại [Phase 1 Data Dictionary](docs/data_dictionary.md).
 
 ## 3. Mục tiêu phân tích
 
@@ -111,28 +173,36 @@ Tham khảo: [PySpark 3.5.8 Documentation](https://spark.apache.org/docs/3.5.8/a
 
 ## 5. Kiến trúc repository
 
-### File hiện có sau phần chuẩn bị Phase 0
+### File hiện có ở bước chuẩn bị profiling Phase 1
 
 ```text
 airline_operations_analytics/
 ├── .gitignore          # Loại trừ môi trường local, dữ liệu và artifacts lớn
 ├── MASTER_PROMPT.md    # Quy tắc và phạm vi triển khai project
 ├── README.md           # Tài liệu project và trạng thái theo Phase
-└── requirements.txt    # Dependency tối thiểu, đồng bộ với môi trường đã xác minh
+├── requirements.txt    # Dependency tối thiểu, đồng bộ với môi trường đã xác minh
+├── data/raw/           # Ba CSV BTS local; không commit lên Git
+├── docs/
+│   ├── data_dictionary.md
+│   └── data_quality_report.md
+├── scripts/
+│   └── profile_raw_data.py
+└── src/airline_analytics/
+    ├── __init__.py
+    ├── schema.py
+    ├── ingestion.py
+    ├── profiling.py
+    └── quality_checks.py
 ```
 
-### Cấu trúc dự kiến, chưa được tạo
+### Cấu trúc dành cho các Phase sau, chưa được tạo
 
 ```text
 data/
-├── raw/                # CSV gốc từ BTS; dự kiến Phase 1
 ├── processed/          # Parquet đã làm sạch; dự kiến Phase 2
 └── analytics/          # Bảng KPI cho Power BI; dự kiến Phase 3
-docs/                   # Data dictionary, business rules và findings khi phát sinh
 models/                 # Model artifacts và metrics; dự kiến Phase 5
 powerbi/                # PBIX và dashboard screenshots; dự kiến Phase 4
-scripts/                # Entry points, chỉ tạo ở Phase sử dụng
-src/airline_analytics/  # Module Python, chỉ tạo theo nhu cầu từng Phase
 tests/                  # Tests, chỉ tạo cùng business rule hoặc transformation cần test
 ```
 
@@ -177,8 +247,8 @@ Các kết quả chưa được người dùng chạy và cung cấp output ph�
 
 | Phase | Nội dung | Trạng thái |
 |---|---|---|
-| Phase 0 | Scope, cấu trúc tối thiểu, README, environment, requirements, Spark Smoke Test | **Sẵn sàng chốt — chờ người dùng xác nhận** |
-| Phase 1 | Data acquisition, schema profiling, data dictionary, quality findings | Chưa bắt đầu |
+| Phase 0 | Scope, cấu trúc tối thiểu, README, environment, requirements, Spark Smoke Test | **Hoàn thành — người dùng đã xác nhận** |
+| Phase 1 | Data acquisition, schema profiling, data dictionary, quality findings | **Đang thực hiện — chờ chạy profiler và xác minh output** |
 | Phase 2 | Cleaning, validation, cleaned Parquet | Chưa bắt đầu |
 | Phase 3 | Spark SQL KPI, analytical tables, business findings | Chưa bắt đầu |
 | Phase 4 | Power BI model, hai trang dashboard, metric verification | Chưa bắt đầu |
@@ -200,9 +270,9 @@ Không chuyển sang Phase tiếp theo khi chưa có xác nhận của người 
 - [x] `JAVA_HOME` đã được người dùng xác nhận cấu hình đúng.
 - [x] SparkSession, DataFrame API, `df.count()` và Spark SQL cơ bản đã được người dùng smoke test thành công.
 - [x] GitHub repository đã có các file ban đầu trên branch `main`.
-- [ ] Người dùng đã xác nhận Phase 0 đạt yêu cầu.
+- [x] Người dùng đã xác nhận Phase 0 đạt yêu cầu.
 
-Phase 0 chưa được đánh dấu hoàn thành cho đến khi người dùng kiểm tra README và xác nhận chốt Phase.
+Phase 0 đã hoàn thành. Không thay đổi lại phạm vi hoặc kết quả Phase 0 nếu không có lý do cụ thể.
 
 ## 10. Kết quả xác minh Phase 0
 
@@ -240,8 +310,9 @@ Hai cảnh báo không ngăn Smoke Test chạy thành công. Hiện chưa áp d�
 
 ## 11. Những hạng mục chưa kiểm thử
 
-- Đọc CSV thực tế từ BTS.
-- Kiểm tra schema và chất lượng dữ liệu BTS.
+- Đọc ba CSV BTS thực tế: **đã kiểm thử thành công trong Phase 1**.
+- Chạy Spark profiler trên toàn bộ ba CSV BTS: **đã kiểm thử thành công, exit code `0`**.
+- Xác minh logical types và các quality rules đã cấu hình: **đã hoàn thành trong Phase 1**.
 - Đọc hoặc ghi Parquet.
 - Cleaning và validation pipeline.
 - Spark SQL KPI queries trên dữ liệu thực tế.
@@ -264,8 +335,65 @@ Không có business metric, data-quality metric hoặc Machine Learning metric n
 - [x] Các hạng mục chưa kiểm thử được liệt kê rõ.
 - [x] Chưa ghi business hoặc ML metrics khi chưa có dữ liệu.
 - [x] GitHub repository và branch `main` được ghi nhận.
-- [ ] Người dùng xác nhận chốt Phase 0.
+- [x] Người dùng xác nhận chốt Phase 0.
 
-Sau khi người dùng xác nhận, README có thể đánh dấu Phase 0 là hoàn thành. Phase 1 chỉ bắt đầu khi có yêu cầu tiếp tục rõ ràng.
+Phase 0 đã được xác nhận hoàn thành. Phase 1 đã bắt đầu nhưng chưa hoàn thành.
 
-**Dừng tại đây:** không bắt đầu Phase 1, không tải dữ liệu và không chạy thêm test khi chưa có xác nhận của người dùng.
+## 13. Phase 1 — Current status
+
+### Verified acquisition facts
+
+| Month | File size | SHA-256 source |
+|---|---:|---|
+| January 2025 | 111,474,672 bytes | User-provided |
+| February 2025 | 104,767,501 bytes | User-provided |
+| March 2025 | 124,595,215 bytes | User-provided |
+| **Total** | **340,837,388 bytes** | — |
+
+- Three monthly headers match exactly in name and order.
+- The confirmed raw schema contains 36 columns.
+- The January five-record preview confirms only observed formatting, not full-dataset quality.
+- Raw columns will be read as strings; logical casts are measured without modifying source values.
+- The profiler validates filename, size, header and SHA-256 before starting Spark.
+
+### Implementation status
+
+- [x] Raw schema contract prepared.
+- [x] File-integrity and header validation prepared.
+- [x] Raw-string Spark ingestion prepared.
+- [x] Overall and per-file missing-value profiling prepared.
+- [x] Cast, duplicate, flight-status, domain and categorized anomaly profiling prepared.
+- [x] Data dictionary drafted from verified header and BTS meanings.
+- [x] Data quality report structure prepared.
+- [ ] User has run `scripts/profile_raw_data.py`.
+- [ ] Record counts and profiling output have been verified.
+- [ ] Data dictionary has been finalized from cast results.
+- [ ] Data quality report and README contain verified Phase 1 results.
+- [ ] User has confirmed Phase 1 complete.
+
+### User-run profiling command
+
+Run from the repository root in PowerShell. This command is provided for the project owner to execute; it has not been run by Codex.
+
+```powershell
+$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
+$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
+
+$env:PYSPARK_PYTHON = $projectPython
+$env:PYSPARK_DRIVER_PYTHON = $projectPython
+$env:PYTHONPATH = (Resolve-Path ".\src").Path
+
+& $sparkSubmit `
+    --master "local[2]" `
+    --driver-memory "4g" `
+    ".\scripts\profile_raw_data.py" `
+    --input-dir ".\data\raw" `
+    --output ".\artifacts\phase1\profile_summary.json"
+
+$sparkExitCode = $LASTEXITCODE
+Write-Host "spark-submit exit code: $sparkExitCode"
+```
+
+The two `PYSPARK_*` variables ensure both the local driver and Python workers use Python 3.11 from `.venv`. They are set only for the current PowerShell session. The script reads raw CSVs only, writes one ignored JSON profiling artifact, and does not create cleaned data, Parquet, KPI tables, models, or dashboard files.
+
+**Current stop point:** profiling code is ready, but has not been executed. Phase 2 has not started.
