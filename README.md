@@ -538,4 +538,7 @@ Get-Content ".\artifacts\phase2\validation_summary.json" -Raw
 
 The verified evidence includes raw/cleaned/read-back counts, month counts, flight-status reconciliation, schema types, cast/null checks, binary and HHmm checks, row-level `ARR_DEL15` checks, write/read-back status, failed checks, and `overall_status`.
 
-**Current stop point:** Phase 2 implementation and validation are complete; Git commit and final project-owner sign-off are pending. Phase 3 has not started.
+**Current stop point:** 
+Phase 2: Completed — implementation and validation passed.
+Committed and pushed to main at 6c50b00.
+Phase 3: Not started.
