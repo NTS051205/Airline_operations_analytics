@@ -1,738 +1,271 @@
 # Airline Operations Analytics & Flight Delay Prediction
 
-Portfolio project định hướng vị trí **Data Analyst Intern / Fresher**, tập trung vào Business Analytics, SQL, Power BI và các kết quả định lượng có thể kiểm chứng. Apache Spark và Machine Learning được sử dụng để thể hiện năng lực xử lý dữ liệu và dự đoán, nhưng không làm tăng độ phức tạp hệ thống nếu không tạo thêm giá trị phân tích.
+A Data Analyst / Data Engineer portfolio project turning **1.65 million flight records** into validated operational KPIs and a three-page Power BI dashboard.
 
-> **Trạng thái hiện tại:** Phase 3B — Additional Business Analytics (**implementation and runtime validation completed; pending Git commit**).
+**Status:** Data processing and SQL analytics completed and runtime-validated. Power BI dashboard built; testing and portfolio polish in progress. Machine Learning is planned, not implemented.
 
-> Phase 0–3A đã hoàn thành theo xác nhận của project owner. Phase 1: `3403d4d`; Phase 2 code: `6c50b00`, documentation: `4a9e907`; Phase 3A runtime validated và pushed to main tại `5aa27ea`. Phase 3B đã chạy thành công, 30/30 checks PASS, chờ Git commit; Power BI và Machine Learning chưa bắt đầu.
+## 1. Project Overview
 
-## Phase 1 — Verified profiling results
+Flight delays and cancellations affect both airline operations and passenger experience. This project investigates where observed performance differs across months, airlines, origin airports, directed routes and scheduled departure times.
 
-Nguồn bằng chứng là `artifacts/phase1/profile_summary.json`, được tạo bởi lần chạy profiler thành công của project owner. Trong phần này:
+The goal is to distinguish **high delay rates from high flight volumes**, use the right population for each KPI, and provide traceable evidence for further operational investigation—not claim causes or business improvements that have not been measured.
 
-- **JSON direct** là số liệu được JSON cung cấp trực tiếp.
-- **Derived from JSON** là phép tính số học từ các số liệu trực tiếp; đây không phải một Spark check bổ sung.
+The implementation combines schema-aware PySpark processing, readable Spark SQL, Parquet storage and Power BI measures. It runs locally on a 12 GB Windows laptop, without a new data warehouse or orchestration framework.
 
-### Dataset coverage
+## 2. Dataset
 
-| Period | Records | Evidence |
-|---|---:|---|
-| January 2025 | 539,747 | JSON direct |
-| February 2025 | 504,884 | JSON direct |
-| March 2025 | 600,872 | JSON direct |
-| **January–March 2025** | **1,645,503** | **JSON direct** |
+**Source:** U.S. Bureau of Transportation Statistics, [Reporting Carrier On-Time Performance](https://transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=&gnoyr_VQ=FGJ).
 
-Input có **36 cột**. Tổng ba tháng `539,747 + 504,884 + 600,872 = 1,645,503` là phép đối chiếu derived from JSON.
-
-### Flight status
-
-| Status | Records | Evidence |
-|---|---:|---|
-| Completed | 1,611,046 | JSON direct |
-| Canceled | 30,640 | JSON direct |
-| Diverted | 3,817 | JSON direct |
-
-Ba trạng thái cộng lại đúng 1,645,503 records. Đây là đối chiếu số lượng, không phải kết luận về hiệu quả vận hành.
-
-### Data-quality checks
-
-| Check | Result | Evidence |
-|---|---:|---|
-| Cast failures | 0 | JSON direct |
-| Exact duplicate groups / rows in groups / excess rows | 0 / 0 / 0 | JSON direct |
-| Candidate-key collision groups / rows in groups / excess rows | 0 / 0 / 0 | JSON direct |
-| Confirmed-invalid-rule violations | 0 | JSON direct |
-| Suspicious-business-rule violations | 0 | JSON direct |
-
-Không phát hiện violation trong **các rule đã cấu hình** không đồng nghĩa dữ liệu hoàn hảo. Zero cast failures xác nhận khả năng parse theo schema đã cấu hình, không chứng minh mọi giá trị đều đúng về mặt nghiệp vụ. Candidate key là khóa ứng viên của project, không phải primary key chính thức do BTS công bố.
-
-### Missingness and extreme value
-
-- Missing `ARR_DEL15`: **34,457** — JSON direct.
-- `30,640 canceled + 3,817 diverted = 34,457` — derived from JSON. Hai tổng số khớp nhau ở mức aggregate; điều này tự nó không chứng minh quan hệ row-by-row.
-- `CANCELLATION_CODE` và năm cột delay-cause là các trường có điều kiện. `NULL` ở các trường này không mặc định là lỗi.
-- Maximum `ARR_DELAY`: **3,407 phút** — JSON direct. Đây là giá trị cực đoan cần xem xét ở phase sau, chưa có bằng chứng để kết luận là dữ liệu sai.
-
-### Descriptive rate
-
-- Completed flights với `ARR_DEL15 = 1`: **317,266** — JSON direct.
-- Arrival Delay Rate among completed flights: `317,266 / 1,611,046 ≈ 19.69%` — derived from JSON.
-
-Mẫu số của tỷ lệ trên là **completed flights**, không phải toàn bộ raw records. Tại Phase 1, đây là thống kê mô tả từ profiling. Phase 3A sau đó đã xác minh cùng delayed/completed counts trong SQL aggregate baseline reconciliation.
-
-Chi tiết và limitations được ghi tại [Phase 1 Data Quality Report](docs/data_quality_report.md). Phase 1 đã được project owner xác nhận hoàn thành và push tại commit `3403d4d`. **Không có cleaning, Parquet pipeline, Power BI hay Machine Learning nào được xác nhận trong Phase 1.**
-
-> **Roadmap checkpoint:** Phase 0–3A đã hoàn thành; Phase 3B implementation và runtime validation đã hoàn tất, chờ Git commit. Các monthly findings Phase 3A bên dưới có bằng chứng JSON; ba business queries Phase 3A mới được bounded preview, chưa đánh giá toàn bộ kết quả ba tháng. Các phase sau chưa bắt đầu.
->
-> Phase 2 đã giữ nguyên 1,645,503 records qua cleaning và Parquet read-back, xác minh cleaned schema 38 cột, 15/15 pre-write checks và 9/9 read-back checks PASS.
-
-**GitHub repository:** [NTS051205/Airline_operations_analytics](https://github.com/NTS051205/Airline_operations_analytics) — Phase 1, Phase 2 và Phase 3A đã được commit và push; các commit ở trên do project owner cung cấp.
-
-## 1. Business problem
-
-Chậm chuyến làm giảm hiệu quả vận hành của hãng hàng không và ảnh hưởng trực tiếp đến trải nghiệm hành khách. Project sử dụng dữ liệu chuyến bay thực tế của Hoa Kỳ để đo lường hiệu suất đúng giờ, xác định các nhóm có rủi ro chậm chuyến cao và đánh giá khả năng dự đoán chuyến bay đến trễ trước thời điểm khởi hành theo lịch.
-
-Project cần trả lời các câu hỏi chính:
-
-1. Hiệu quả đúng giờ khác nhau như thế nào giữa các hãng hàng không?
-2. Sân bay, tuyến bay và khung giờ nào có tỷ lệ chậm chuyến cao?
-3. Tình trạng chậm chuyến thay đổi như thế nào theo tháng và ngày trong tuần?
-4. Các nhóm nguyên nhân được BTS ghi nhận đóng góp như thế nào vào tổng số phút chậm?
-5. Có thể dự đoán một chuyến bay đến trễ từ 15 phút trở lên bằng thông tin có sẵn trước giờ khởi hành hay không?
-6. Kết quả phân tích hỗ trợ đề xuất vận hành nào có thể đo lường và truy vết về dữ liệu?
-
-Phân tích mô tả mối liên hệ trong dữ liệu; không diễn giải tương quan thành quan hệ nhân quả khi chưa có phương pháp chứng minh phù hợp.
-
-## 2. Dataset và phạm vi MVP
-
-- **Nguồn:** U.S. Bureau of Transportation Statistics (BTS).
-- **Dataset:** Reporting Carrier On-Time Performance.
-- **Trang tải chính thức:** [BTS TranStats](https://transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=&gnoyr_VQ=FGJ).
-- **MVP hiện tại:** tháng 01, 02 và 03 năm 2025.
-- **Mở rộng dự kiến:** cả năm 2025, chỉ sau khi pipeline MVP đã được người dùng chạy và kiểm chứng.
-- **Định dạng nguồn:** CSV tải trực tiếp từ BTS.
-- **Định dạng xử lý:** Snappy-compressed Parquet, đã write/read-back thành công trong Phase 2.
-
-Ba file raw CSV January–March 2025 đã được profiling thành công trong Phase 1: 1,645,503 records, 36 cột và zero cast failures dưới contract đã kiểm tra. Phase 2 giữ nguyên grain một raw row thành một cleaned row và đã xác minh 1,645,503 records cùng schema 38 cột sau Parquet read-back.
-
-Acquisition evidence, file sizes và SHA-256 được ghi tại [Phase 1 Data Quality Report](docs/data_quality_report.md). Schema contract được ghi tại [Phase 1 Data Dictionary](docs/data_dictionary.md).
-
-## 3. Mục tiêu phân tích
-
-### Business Analytics và SQL
-
-- Xây dựng định nghĩa KPI với numerator, denominator, điều kiện lọc và cách xử lý `NULL` rõ ràng.
-- So sánh hiệu suất hãng hàng không, sân bay và tuyến bay.
-- Phân tích xu hướng theo tháng, ngày trong tuần và giờ khởi hành theo lịch.
-- Tách nhất quán chuyến hoàn thành, chuyến hủy và chuyến chuyển hướng.
-- Thực hiện các phép tổng hợp quan trọng bằng Spark SQL.
-- Xuất bảng tổng hợp có grain rõ ràng cho Power BI, tránh double counting.
-
-Các KPI của project gồm (phần theo ngày/khung giờ đã được xác minh trong Phase 3B):
-
-- Total Scheduled Flights.
-- Completed Flights.
-- On-Time Arrival Rate.
-- Arrival Delay Rate (`>= 15` phút).
-- Cancellation Rate.
-- Diversion Rate.
-- Average Arrival Delay Minutes.
-- Delay rate theo airline, airport, route, month, day of week và scheduled departure hour.
-
-Định nghĩa KPI Phase 3A nằm tại [KPI Definitions](docs/kpi_definitions.md), gồm numerator, denominator, grain và NULL handling. Arrival Delay Rate dùng completed flights; Cancellation/Diversion Rate dùng total flights. Bốn bảng aggregate đã được runtime validation và Parquet read-back xác minh. Phase 3B đã chạy và xác minh ba truy vấn Day-of-Week, Scheduled Departure Time Bands và Delay Cause Breakdown cùng CSV read-back.
-
-### Power BI
-
-Dashboard dự kiến có hai trang phân tích chính:
-
-1. **Executive Overview:** tổng số chuyến, tỷ lệ đúng giờ, tỷ lệ chậm, tỷ lệ hủy, xu hướng theo tháng và so sánh hãng.
-2. **Delay Analysis:** chậm chuyến theo sân bay, tuyến bay, ngày trong tuần, giờ khởi hành và nhóm nguyên nhân được ghi nhận.
-
-Trang Prediction Insights chỉ được thêm sau khi mô hình ML hoạt động và các metric đã được người dùng tự chạy, kiểm chứng.
-
-### Machine Learning
-
-Bài toán dự kiến là binary classification: dự đoán chuyến bay có đến trễ từ 15 phút trở lên hay không bằng các trường có sẵn trước giờ khởi hành theo lịch.
-
-- Baseline: majority-class hoặc dummy baseline.
-- Model chính: Logistic Regression bằng Spark MLlib.
-- Model so sánh tùy chọn: Random Forest, chỉ khi model chính đã hoạt động ổn định.
-- Evaluation: Precision, Recall, F1, confusion matrix, ROC-AUC và PR-AUC khi phù hợp.
-- Split: temporal split; không chia ngẫu nhiên toàn bộ dữ liệu.
-- Data leakage: không sử dụng actual delay, actual time hoặc delay-cause fields làm features.
-
-ML là phần bổ sung kỹ thuật. Kết quả Business Analytics và dashboard vẫn là trọng tâm của project.
-
-## 4. Tech stack
-
-| Thành phần | Lựa chọn | Trạng thái |
-|---|---|---|
-| Hệ điều hành | Windows 11 | Đã xác minh bởi người dùng |
-| Ngôn ngữ | Python 3.11.9 | Đã xác minh trong `.venv` |
-| Java | Eclipse Temurin JDK 17.0.20.1 | Đã xác minh; `JAVA_HOME` được cấu hình đúng |
-| Xử lý dữ liệu | Apache Spark / PySpark 3.5.8 | Đã cài; Spark Smoke Test thành công |
-| Phân tích | Spark SQL | Phase 3A pipeline PASS; ba business queries đã bounded preview |
-| Lưu trữ | Apache Parquet | Phase 2 cleaned và Phase 3A aggregates write/read-back PASS; chỉ cleaned partition `YEAR`/`MONTH` |
-| Machine Learning | Spark MLlib | Dự kiến Phase 5 |
-| Dashboard | Power BI | Dự kiến Phase 4 |
-| Tests | pytest 8.4.2 | Đã cài; chưa chạy unit tests |
-| Version control | Git / GitHub | Repository đã có file ban đầu trên branch `main` |
-
-### Phiên bản môi trường đã xác minh
-
-- OS: Windows 11.
-- Python: 3.11.9.
-- Java: Eclipse Temurin JDK 17.0.20.1.
-- Virtual environment: `.venv`.
-- PySpark: 3.5.8.
-- pytest: 8.4.2.
-
-Đây là cấu hình đã được người dùng xác minh cho Spark chạy local trên Windows 11. Phase 0 xác nhận SparkSession/DataFrame/Spark SQL cơ bản; Phase 2 sau đó xác nhận riêng cleaning pipeline và Parquet write/read-back trên dữ liệu BTS.
-
-Tham khảo: [PySpark 3.5.8 Documentation](https://spark.apache.org/docs/3.5.8/api/python/).
-
-## 5. Kiến trúc repository
-
-### File hiện có sau khi xác minh Phase 3B
-
-```text
-airline_operations_analytics/
-├── .gitignore          # Loại trừ môi trường local, dữ liệu và artifacts lớn
-├── MASTER_PROMPT.md    # Quy tắc và phạm vi triển khai project
-├── README.md           # Tài liệu project và trạng thái theo Phase
-├── requirements.txt    # Dependency tối thiểu, đồng bộ với môi trường đã xác minh
-├── data/raw/           # Ba CSV BTS local; không commit lên Git
-├── docs/
-│   ├── data_dictionary.md
-│   ├── data_quality_report.md
-│   ├── phase2_cleaning_report.md
-│   ├── kpi_definitions.md
-│   └── phase3b_findings.md
-├── scripts/
-│   ├── profile_raw_data.py
-│   ├── smoke_test_parquet.py
-│   ├── build_cleaned_parquet.py
-│   ├── build_analytics.py
-│   └── run_phase3b.py
-├── sql/analytics/
-│   ├── 000_kpi_summary.sql
-│   ├── 001_monthly_performance.sql
-│   ├── 002_airline_monthly_performance.sql
-│   ├── 003_origin_airport_monthly_performance.sql
-│   ├── 004_route_monthly_performance.sql
-│   ├── 005_airline_ranking.sql
-│   ├── 006_airline_mom.sql
-│   ├── 007_high_delay_routes.sql
-│   ├── 008_day_of_week.sql
-│   ├── 009_departure_time_band.sql
-│   └── 010_delay_causes.sql
-└── src/airline_analytics/
-    ├── __init__.py
-    ├── schema.py
-    ├── ingestion.py
-    ├── profiling.py
-    ├── quality_checks.py
-    ├── cleaning.py
-    ├── validation.py
-    └── analytics_validation.py
-```
-
-### Output local đã xác minh trong Phase 2, Phase 3A và Phase 3B
-
-```text
-data/processed/flights_cleaned/             # Parquet local; đã write/read-back thành công
-artifacts/phase2/validation_summary.json     # Validation evidence; overall PASS
-data/analytics/                             # Bốn analytical Parquet outputs đã xác minh
-artifacts/phase3/validation_summary.json     # Phase 3A validation evidence; overall PASS
-artifacts/phase3b/                          # Ba CSV aggregate outputs và validation_summary.json; PASS
-```
-
-### Output chưa tạo và cấu trúc dành cho các Phase sau
-
-```text
-models/                 # Model artifacts và metrics; dự kiến Phase 5
-powerbi/                # PBIX và dashboard screenshots; dự kiến Phase 4
-tests/                  # Tests, chỉ tạo cùng business rule hoặc transformation cần test
-```
-
-Các thư mục dự kiến không được tạo trước. Mỗi thư mục hoặc module chỉ xuất hiện khi Phase tương ứng thực sự cần đến nó.
-
-## 6. Luồng dữ liệu dự kiến
-
-```text
-BTS CSV
-  -> schema profiling và data-quality checks
-  -> Spark cleaning và validation
-  -> cleaned Parquet
-  -> Spark SQL KPI tables
-  -> Power BI analytical model
-
-cleaned Parquet
-  -> leakage-safe feature engineering
-  -> temporal train/validation/test split
-  -> baseline và Spark MLlib model
-  -> evaluation metrics
-```
-
-Phase 1 profiling, Phase 2 cleaning/Parquet validation và Phase 3A Spark SQL analytics đã chạy thành công. Cleaned output nằm tại `data/processed/flights_cleaned/`; bốn analytical tables nằm tại `data/analytics/` và đều đã vượt qua read-back schema/count/value checks.
-
-## 7. Quản lý bằng chứng và kết quả định lượng
-
-Mọi claim dùng trong README hoặc CV phải truy vết được về query, output, bảng kết quả hoặc báo cáo đánh giá. Không tạo số liệu minh họa như thể là kết quả thật.
-
-Các nhóm metric cần lưu ở Phase phù hợp:
-
-| Nhóm | Ví dụ | Trạng thái |
-|---|---|---|
-| Data | raw rows, cleaned rows, read-back rows, dataset size | Raw/cleaned/read-back đều 1,645,503; dataset-size benchmark chưa thực hiện |
-| Quality | nulls, duplicate candidates, invalid values | Phase 1 profiling và Phase 2 validation đã xác minh theo các rules được triển khai |
-| Business | delay rate, cancellation rate, airline/route differences | Phase 3A aggregates đã xác minh; monthly findings từ JSON; airline/route examples chờ bằng chứng preview chi tiết |
-| ML | precision, recall, F1, ROC-AUC, baseline comparison | Chờ Phase 5 |
-| Performance | processing time, Spark config, number of runs | Chỉ ghi nếu benchmark hợp lệ |
-
-Các kết quả chưa được người dùng chạy và cung cấp output phải ghi là `pending` hoặc `not run`.
-
-## 8. Roadmap và trạng thái
-
-| Phase | Nội dung | Trạng thái |
-|---|---|---|
-| Phase 0 | Scope, cấu trúc tối thiểu, README, environment, requirements, Spark Smoke Test | **Hoàn thành — người dùng đã xác nhận** |
-| Phase 1 | Data acquisition, schema profiling, data dictionary, quality findings | **Hoàn thành — committed and pushed (`3403d4d`)** |
-| Phase 2 | Cleaning, validation, cleaned Parquet | **Completed, committed and pushed (`6c50b00`, `4a9e907`)** |
-| Phase 3A | Core KPI tables, airline ranking, MoM, directed-route analysis | **Completed, runtime validated and pushed (`5aa27ea`)** |
-| Phase 3B | Day-of-Week, Scheduled Departure Time Bands, Delay Cause Breakdown | **Implementation and runtime validation completed; pending Git commit** |
-| Phase 4 | Power BI model, hai trang dashboard, metric verification | Chưa bắt đầu |
-| Phase 5 | Feature engineering, baseline, Logistic Regression, evaluation | Chưa bắt đầu |
-| Phase 6 | Final insights, documentation, CV bullets, interview preparation | Chưa bắt đầu |
-
-Không chuyển sang Phase tiếp theo khi chưa có xác nhận của người dùng. README phải được cập nhật trong từng Phase trước khi Phase đó được đánh dấu hoàn thành.
-
-## 9. Phase 0 acceptance criteria
-
-- [x] Phạm vi MVP và business questions đã được mô tả.
-- [x] Tech stack được giữ đúng phạm vi đã thống nhất.
-- [x] Cấu trúc repository tối thiểu và kiến trúc dự kiến đã được phân biệt rõ.
-- [x] README ghi rõ phần đã hoàn thành và phần dự kiến.
-- [x] Dependency tối thiểu đã được cài và phiên bản thực tế đã được ghi nhận.
-- [x] `.gitignore` đã được chuẩn bị để tránh đưa dữ liệu và artifacts local lên Git.
-- [x] Người dùng đã xác nhận môi trường Windows 11 và virtual environment `.venv`.
-- [x] Người dùng đã cung cấp kết quả phiên bản Python, Java, PySpark và pytest.
-- [x] `JAVA_HOME` đã được người dùng xác nhận cấu hình đúng.
-- [x] SparkSession, DataFrame API, `df.count()` và Spark SQL cơ bản đã được người dùng smoke test thành công.
-- [x] GitHub repository đã có các file ban đầu trên branch `main`.
-- [x] Người dùng đã xác nhận Phase 0 đạt yêu cầu.
-
-Phase 0 đã hoàn thành. Không thay đổi lại phạm vi hoặc kết quả Phase 0 nếu không có lý do cụ thể.
-
-## 10. Kết quả xác minh Phase 0
-
-### Environment
-
-| Hạng mục | Kết quả thực tế | Trạng thái |
-|---|---|---|
-| OS | Windows 11 | Verified |
-| Python | 3.11.9 | Verified |
-| Java | Eclipse Temurin JDK 17.0.20.1 | Verified |
-| `JAVA_HOME` | Đã cấu hình đúng | Verified |
-| Virtual environment | `.venv` | Verified |
-| PySpark | 3.5.8 | Verified |
-| pytest | 8.4.2 | Installed; unit tests not run |
-
-### Spark Smoke Test
-
-| Kiểm tra | Kết quả thực tế |
-|---|---|
-| Khởi tạo SparkSession | Thành công |
-| Spark version | 3.5.8 |
-| DataFrame test data | 3 records |
-| `df.count()` | Trả về `3` |
-| Spark SQL | Thành công; trả về `AA`, `DL`, `UA` |
-| Dừng Spark | Chương trình kết thúc sau `spark.stop()` |
-
-Smoke Test xác nhận Python có thể khởi tạo SparkSession và thực hiện thao tác DataFrame/Spark SQL cơ bản. Test này không đọc dữ liệu BTS, không đọc/ghi Parquet và không chạy pipeline của project.
-
-### Cảnh báo Windows đã quan sát
-
-- `winutils.exe not found`.
-- `Native Hadoop library unavailable`.
-
-Hai cảnh báo không ngăn Spark Smoke Test Phase 0 chạy thành công. Sau đó, project owner đã cấu hình Hadoop 3.3.4 Windows utilities và xác minh Parquet write/read trong Phase 2. Các binary này chỉ nằm trong môi trường local, không commit vào repository.
-
-## 11. Những hạng mục chưa kiểm thử
-
-- Đọc ba CSV BTS thực tế: **đã kiểm thử thành công trong Phase 1**.
-- Chạy Spark profiler trên toàn bộ ba CSV BTS: **đã kiểm thử thành công, exit code `0`**.
-- Xác minh logical types và các quality rules đã cấu hình: **đã hoàn thành trong Phase 1**.
-- Đọc/ghi Parquet với Snappy và partition `YEAR`/`MONTH`: **đã kiểm thử thành công trong Phase 2**.
-- Cleaning và validation pipeline: **PASS, exit code `0`; 15/15 pre-write và 9/9 read-back checks**.
-- Spark SQL KPI queries trên dữ liệu thực tế: **Phase 3A PASS; ba business queries đã bounded preview, chưa đánh giá toàn bộ kết quả ba tháng**.
-- Unit tests bằng pytest.
-- Power BI analytical model và dashboard.
-- Feature engineering, model training và Machine Learning evaluation.
-- Processing-time benchmark.
-
-Không có business metric, data-quality metric hoặc Machine Learning metric nào được ghi nhận ở Phase 0.
-
-## 12. Phase 0 final checklist
-
-- [x] Business problem và business questions được mô tả.
-- [x] Scope MVP là tháng 01–03/2025.
-- [x] Kiến trúc dự kiến được phân biệt với thành phần đã triển khai.
-- [x] Environment versions được ghi nhận từ kết quả thực tế.
-- [x] Dependency versions được ghi nhận là PySpark 3.5.8 và pytest 8.4.2.
-- [x] Spark Smoke Test và phạm vi của test được ghi nhận.
-- [x] Cảnh báo Windows được ghi nhận mà không kết luận quá mức.
-- [x] Các hạng mục chưa kiểm thử được liệt kê rõ.
-- [x] Chưa ghi business hoặc ML metrics khi chưa có dữ liệu.
-- [x] GitHub repository và branch `main` được ghi nhận.
-- [x] Người dùng xác nhận chốt Phase 0.
-
-Phase 0–3A đã được project owner xác nhận hoàn thành. Phase 3B đã hoàn tất implementation và runtime validation; chờ Git commit.
-
-## 13. Phase 1 — Completed
-
-### Verified acquisition facts
-
-| Month | File size | SHA-256 source |
-|---|---:|---|
-| January 2025 | 111,474,672 bytes | User-provided |
-| February 2025 | 104,767,501 bytes | User-provided |
-| March 2025 | 124,595,215 bytes | User-provided |
-| **Total** | **340,837,388 bytes** | — |
-
-- Three monthly headers match exactly in name and order.
-- The confirmed raw schema contains 36 columns.
-- The January five-record preview confirms only observed formatting, not full-dataset quality.
-- Raw columns will be read as strings; logical casts are measured without modifying source values.
-- The profiler validates filename, size, header and SHA-256 before starting Spark.
-
-### Implementation status
-
-- [x] Raw schema contract prepared.
-- [x] File-integrity and header validation prepared.
-- [x] Raw-string Spark ingestion prepared.
-- [x] Overall and per-file missing-value profiling prepared.
-- [x] Cast, duplicate, flight-status, domain and categorized anomaly profiling prepared.
-- [x] Data dictionary drafted from verified header and BTS meanings.
-- [x] Data quality report structure prepared.
-- [x] User ran `scripts/profile_raw_data.py` successfully with exit code `0`.
-- [x] Record counts and profiling output were verified.
-- [x] Data dictionary was finalized from cast results.
-- [x] Data quality report and README contain verified Phase 1 results.
-- [x] User confirmed Phase 1 complete; commit `3403d4d` was pushed to GitHub.
-
-### User-run profiling command
-
-Historical reproducibility command for Phase 1. It was run by the project owner, not by Codex.
-
-```powershell
-$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
-$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
-
-$env:PYSPARK_PYTHON = $projectPython
-$env:PYSPARK_DRIVER_PYTHON = $projectPython
-$env:PYTHONPATH = (Resolve-Path ".\src").Path
-
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "4g" `
-    ".\scripts\profile_raw_data.py" `
-    --input-dir ".\data\raw" `
-    --output ".\artifacts\phase1\profile_summary.json"
-
-$sparkExitCode = $LASTEXITCODE
-Write-Host "spark-submit exit code: $sparkExitCode"
-```
-
-The two `PYSPARK_*` variables ensure both the local driver and Python workers use Python 3.11 from `.venv`. They are set only for the current PowerShell session. The script reads raw CSVs only, writes one ignored JSON profiling artifact, and does not create cleaned data, Parquet, KPI tables, models, or dashboard files.
-
-Phase 1, Phase 2 and Phase 3A are closed, committed and pushed. Phase 3B implementation and runtime validation are completed; Git commit is pending.
-
-## 14. Phase 2 — Data Cleaning & Parquet
-
-### Current status
-
-- [x] Cleaning rules implemented with Spark DataFrame expressions.
-- [x] Safe integer conversion prepared for binary flags represented as `"0.00"`/`"1.00"`.
-- [x] `flight_status` derivation prepared without filtering cancelled or diverted flights.
-- [x] Pre-write validation and Phase 1 baseline reconciliation prepared.
-- [x] Snappy Parquet write prepared with `YEAR`/`MONTH` partitions and existing-output refusal.
-- [x] Parquet read-back validation prepared.
-- [x] Small Windows Parquet smoke-test script prepared.
-- [x] Phase 2 documentation prepared.
-- [x] Project owner ran the Parquet smoke test: PASS, exit code `0`.
-- [x] Project owner ran the full cleaning pipeline: PASS, exit code `0`.
-- [x] Project owner reviewed `artifacts/phase2/validation_summary.json` and supplied the verified runtime results.
-- [x] Cleaned Parquet counts and 38-column schema were verified by read-back.
-- [x] Phase 2 code and documentation have been committed and pushed (`6c50b00`, `4a9e907`).
-- [x] Project owner has confirmed Phase 2 complete.
-
-Phase 2 is complete, including owner sign-off, implementation, runtime validation, commit and push.
-
-### Verified Phase 2 results
-
-| Validation metric | Result |
+| Coverage | Records |
 |---|---:|
-| Parquet smoke test | PASS; exit code `0` |
-| Full pipeline | PASS; exit code `0` |
-| Raw rows | 1,645,503 |
-| Cleaned rows | 1,645,503 |
-| Parquet read-back rows | 1,645,503 |
-| January / February / March | 539,747 / 504,884 / 600,872 |
-| Completed / Cancelled / Diverted / Invalid | 1,611,046 / 30,640 / 3,817 / 0 |
-| Cleaned schema | 38 columns |
-| Introduced cast `NULL`s | 0 |
-| `ARR_DEL15` row-level violations | 0 |
-| Pre-write checks | 15/15 PASS |
-| Read-back checks | 9/9 PASS |
-| Failed checks / errors | 0 / 0 |
+| January 2025 | 539,747 |
+| February 2025 | 504,884 |
+| March 2025 | 600,872 |
+| **Total** | **1,645,503** |
 
-Output: `data/processed/flights_cleaned/`, written/configured with Snappy compression and partitioned by `YEAR` and `MONTH`. Write/read succeeded on Windows 11 with PySpark 3.5.8 after Hadoop 3.3.4 Windows utilities were configured locally; those binaries are not committed to the repository.
+The input contains 36 BTS columns. Cleaning preserves every record and produces 38 columns, adding source-file lineage and flight status.
 
-Các kết quả này xác minh những rule Phase 2 đã triển khai và một lần chạy local thành công. Chúng không chứng minh dữ liệu hoàn hảo, không phải production benchmark, và không phải business KPI hoặc Machine Learning result. Kết quả Business Analytics Phase 3A được ghi riêng bên dưới; Machine Learning và production benchmark chưa thực hiện.
+- **Completed:** `CANCELLED = 0` and `DIVERTED = 0`.
+- **Cancelled:** `CANCELLED = 1` and `DIVERTED = 0`.
+- **Diverted:** `CANCELLED = 0` and `DIVERTED = 1`.
+- Other flag combinations are invalid under the project contract; none were observed.
 
-### Cleaning behavior
+A delayed arrival is a completed flight with `ARR_DEL15 = 1` (at least 15 minutes late). “On time” means `ARR_DEL15 = 0`: less than 15 minutes late, including early arrivals.
 
-- Blank/whitespace-only source strings become `NULL`; conditional nulls are retained.
-- Calendar fields and numeric IDs become integers; `FL_DATE` becomes `DateType`.
-- Delay, distance, and delay-cause measures become doubles.
-- Four binary flags become integer `0`/`1`/`NULL` without truncating other numeric values.
-- Four HHmm columns remain strings, preserving leading zeros and literal `2400`.
-- The output keeps all 36 BTS columns, `_source_file`, and derived `flight_status`.
-- No deduplication, imputation, outlier capping, KPI aggregation, or ML feature engineering is performed.
+See the [data dictionary](docs/data_dictionary.md) for fields and types.
 
-Detailed rules and verified runtime evidence are documented in [Phase 2 Cleaning and Parquet Report](docs/phase2_cleaning_report.md).
+## 3. Tech Stack
 
-### PowerShell environment check
+| Technology | Role | Status |
+|---|---|---|
+| Python 3.11.9 / PySpark 3.5.8 | Profiling, typed cleaning and validation | Used |
+| Spark SQL | KPI aggregation, rankings, month-over-month and delay analysis | Used |
+| Apache Parquet / Snappy | Typed cleaned data and core analytical outputs | Used |
+| Power BI / DAX | Three-page dashboard and ratio-of-sums measures | Built; validation in progress |
+| Spark MLlib | Leakage-aware flight-delay classification | Planned |
 
-Run from the repository root:
+Verified processing environment: Windows 11, Java 17, Spark `local[2]` with a 4 GB driver. Parquet write/read succeeded with locally configured Hadoop 3.3.4 Windows utilities. This is a local implementation, not a distributed-cluster benchmark.
 
-```powershell
-Set-Location "E:\airline_operations_analytics"
+## 4. Data Pipeline & Architecture
 
-& ".\.venv\Scripts\python.exe" --version
-java -version
-& ".\.venv\Scripts\python.exe" -c "import pyspark; print('PySpark', pyspark.__version__)"
+~~~mermaid
+flowchart LR
+    A["BTS CSV"] --> B["Profiling"]
+    B --> C["Cleaning & Validation"]
+    C --> D["Cleaned Parquet"]
+    D --> E["Spark SQL Aggregates"]
+    E --> F["Power BI"]
+    D -.-> G["ML features & Spark MLlib — planned"]
+~~~
 
-Test-Path ".\artifacts\phase1\profile_summary.json"
-Test-Path ".\data\processed\flights_cleaned"
-Test-Path ".\artifacts\phase2\validation_summary.json"
-```
+**Engineering choices**
 
-For the verified run, the Phase 1 profile existed and both Phase 2 output paths were absent before execution. After success, the Phase 2 paths exist. The scripts continue to refuse overwriting existing evidence or Parquet output.
+- Validate filenames, headers, sizes and SHA-256 before ingestion; retain `_source_file` for lineage.
+- Preserve conditional NULLs, cancelled/diverted flights, HHmm strings and signed arrival delays. No automatic imputation, deduplication or outlier clipping.
+- Partition cleaned Parquet by `YEAR/MONTH`. Keep small analytical outputs unpartitioned.
+- Use CTEs and `GROUPING SETS` for consistent KPIs; `DENSE_RANK()` for comparisons and `LAG()` with a consecutive-month check for MoM.
+- Retain counts, delay sums and observation counts so rollups use **ratios of sums and weighted averages**, not averages of percentages.
+- Validate schema, counts, grain and values after writing. Do not join or add separate aggregate tables as though they were disjoint flight records.
 
-### Verified Parquet smoke-test command
-
-This three-row synthetic test completed with PASS and exit code `0`. It checks the local Windows Parquet write/read path only and does not validate BTS data. The command below documents the verified run; a rerun requires a new output path or deliberate owner-managed cleanup.
-
-```powershell
-$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
-$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
-
-$env:PYSPARK_PYTHON = $projectPython
-$env:PYSPARK_DRIVER_PYTHON = $projectPython
-$env:PYTHONPATH = (Resolve-Path ".\src").Path
-
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "1g" `
-    ".\scripts\smoke_test_parquet.py" `
-    --output-dir ".\artifacts\phase2\parquet_smoke_test"
-
-$smokeExitCode = $LASTEXITCODE
-Write-Host "Parquet smoke-test exit code: $smokeExitCode"
-```
-
-The script retains its output for inspection and does not delete it after failure. If Windows emits a blocking Hadoop/native-library error, keep the full error output; do not install unverified `winutils.exe` or Hadoop binaries.
-
-### Verified full Phase 2 command
-
-The command below completed with PASS and exit code `0`. It is retained for reproducibility. Because the current output and JSON now exist, the safety checks will refuse an identical rerun unless the project owner deliberately supplies new output paths or manages the existing artifacts.
-
-```powershell
-$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
-$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
-
-$env:PYSPARK_PYTHON = $projectPython
-$env:PYSPARK_DRIVER_PYTHON = $projectPython
-$env:PYTHONPATH = (Resolve-Path ".\src").Path
-
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "4g" `
-    ".\scripts\build_cleaned_parquet.py" `
-    --input-dir ".\data\raw" `
-    --phase1-profile ".\artifacts\phase1\profile_summary.json" `
-    --output-dir ".\data\processed\flights_cleaned" `
-    --validation-output ".\artifacts\phase2\validation_summary.json"
-
-$phase2ExitCode = $LASTEXITCODE
-Write-Host "Phase 2 exit code: $phase2ExitCode"
-```
-
-Review command used for the generated report:
-
-```powershell
-Get-Content ".\artifacts\phase2\validation_summary.json" -Raw
-```
-
-The verified evidence includes raw/cleaned/read-back counts, month counts, flight-status reconciliation, schema types, cast/null checks, binary and HHmm checks, row-level `ARR_DEL15` checks, write/read-back status, failed checks, and `overall_status`.
-
-## 15. Phase 3A — Spark SQL KPI & Core Analytics
-
-**Status: Completed, runtime validated and pushed to main at `5aa27ea` (owner-confirmed).**
-
-Evidence: `artifacts/phase3/validation_summary.json`, `generated_at_utc = 2026-10-10T05:35:56.597113+00:00`. The JSON records `overall_status = PASS`, `failure_stage = null`, and 1,645,503 input records. Pipeline exit code `0` was confirmed by the project owner; the exit code is not a JSON field.
-
-The runner reads only `data/processed/flights_cleaned/` as flight data and the existing Phase 2 JSON as a read-only count baseline. It does not rerun acquisition, profiling or cleaning.
-
-| Parquet output under `data/analytics/` | Grain | Verified pre-write / read-back rows |
+| Analytical output | Grain | Verified rows |
 |---|---|---:|
-| `monthly_performance/` | `YEAR, MONTH` | 3 / 3 |
-| `airline_monthly_performance/` | `YEAR, MONTH, OP_UNIQUE_CARRIER` | 42 / 42 |
-| `origin_airport_monthly_performance/` | `YEAR, MONTH, ORIGIN` | 991 / 991 |
-| `route_monthly_performance/` | `YEAR, MONTH, ORIGIN, DEST` | 16,997 / 16,997 |
+| monthly_performance | YEAR, MONTH | 3 |
+| airline_monthly_performance | YEAR, MONTH, OP_UNIQUE_CARRIER | 42 |
+| origin_airport_monthly_performance | YEAR, MONTH, ORIGIN | 991 |
+| route_monthly_performance | YEAR, MONTH, ORIGIN, DEST | 16,997 |
+| day_of_week | YEAR, MONTH, DAY_OF_WEEK | 21 |
+| departure_time_band | YEAR, MONTH, time_band | 12 |
+| delay_causes | YEAR, MONTH, cause_category | 15 |
 
-Input, pre-write, write and read-back all recorded **PASS**. The recorded checks cover schema, nonnegative counts, grain uniqueness, status/label reconciliation, denominator formulas, NULL handling and monthly reconciliation. All four read-back tables have `all_values_unchanged = true`, the bidirectional `EXCEPT ALL` check. Every recorded `failed_checks` list is empty, all check booleans are true, and `errors` is empty: **0 failed checks; 0 errors**. PASS is limited to these implemented checks, not perfect data or a production benchmark.
+The first four are Parquet outputs under `data/analytics/`; the last three are small CSV outputs under `artifacts/phase3b/`. No flight-level dataset is collected into Pandas.
 
-All four outputs keep flight counts, unrounded 0–1 rates, signed average arrival delay, and its sum/non-null count for correct weighted rollups. They use Snappy Parquet with no directory partitioning and at most one data part file per table. Existing output directories and validation reports are refused; partial outputs are not deleted after failure.
+## 5. Power BI Dashboard & Business Insights
 
-`000_kpi_summary.sql` centralizes KPI definitions using four explicit `GROUPING SETS`; `001`–`004` select the corresponding grain. Only the aggregated summary is cached, with memory-and-disk fallback. The four sets are separate summaries of the same flights: never add their totals together.
+Three pages have been built by the project owner. The saved [Power BI report](dashboard/Airline_Operations_Analytics_final.pbix) contains Executive Overview, Delay Analysis and Performance Explorer, matching the screenshots below. Final filter-context reconciliation and presentation review are still in progress.
 
-Three non-persisted SQL analyses reuse validated aggregate read-back views:
+The screenshots below are captures of the implemented dashboard, saved under `assets/`. Images under `docs/mockups/` remain design concepts and are not used as implementation evidence.
 
-- `005`: monthly airline `DENSE_RANK`, lowest unrounded delay rate first; low-volume groups stay visible with a NULL rank.
-- `006`: airline `LAG` comparison with a consecutive-calendar-month check; separate percentage-point difference and relative percentage change.
-- `007`: directed routes ranked by observed delay rate descending, with a default 30-completed-flights/month heuristic. There is no predictive risk score or causal conclusion.
+**Interaction note:** The Month slicer controls the intended reporting period. Dashboard **Key Findings text is static** and does not automatically change with the slicer. Treat those statements as explicitly scoped Jan–Mar observations, not dynamic summaries.
 
-The shared `--min-completed-flights` setting controls volume flags/eligibility for these analyses only; it never filters the four KPI outputs. The verified run used 30, an adjustable heuristic that does not guarantee statistical reliability. All three queries recorded `PREVIEW_EXECUTED`; only bounded previews were produced, and the complete three-month business-query results have not been reviewed. No fifth persisted table was created.
+### Page 1 — Executive Overview
 
-See [KPI Definitions and verified Phase 3A results](docs/kpi_definitions.md) for NULL handling, interpretation, evidence paths and limitations.
+![Executive Overview — total flights, arrival performance and monthly trends](assets/dashboard_1.png)
 
-### Business Findings — verified monthly observations
+**Purpose:** Summarize overall operations and show why delay frequency, cancellation frequency and average delay answer different questions.
 
-Counts below come directly from `read_back.tables.monthly_performance.by_month` in the JSON. Percentages are **derived from those counts**, rounded to two decimal places for display; they are not literal rate fields in the report.
+**Core KPI cards:** Total Flights, Arrival Delay Rate, On-Time Arrival Rate, Cancellation Rate and Average Arrival Delay.
 
-| Month (2025) | Delayed / completed flights | Arrival Delay Rate | Cancelled / total flights | Cancellation Rate |
+**Visuals:** Monthly arrival-delay line chart, cancellation-rate columns, business findings and KPI definitions.
+
+| Month | Delayed / completed flights | Arrival delay rate | Cancelled / total flights | Cancellation rate |
 |---|---:|---:|---:|---:|
 | January | 98,130 / 522,269 | 18.79% | 16,312 / 539,747 | 3.02% |
 | February | 103,102 / 496,476 | 20.77% | 7,405 / 504,884 | 1.47% |
 | March | 116,034 / 592,301 | 19.59% | 6,923 / 600,872 | 1.15% |
 
-February had the highest observed arrival delay rate of these three months. March had more delayed arrivals than February but a lower delay rate because its completed-flight denominator was larger. Cancellation rates decreased across the three observed months. These are descriptive comparisons, not explanations of causes, predictions, or evidence of a long-term trend.
+**Finding:** February has the highest observed arrival delay rate. March has more delayed arrivals but a lower rate because its completed-flight population is larger. Cancellation rates fall across the three observed months; this is not evidence of a long-term trend.
 
-**Preview evidence still needed for specific examples:** the JSON stores execution status only for `005`–`007`; its airline/route `by_month` sections are rollups across all carriers/routes. They do not contain carrier rankings, AA month-over-month rows, or January route rows. Those three example groups remain undocumented pending the owner's existing console previews; no carrier, route, rank or AA change is inferred from monthly totals. Full three-month business-query interpretation also remains outside the bounded preview evidence.
+Source: Phase 3A validation JSON, summarized in [KPI definitions and findings](docs/kpi_definitions.md).
 
-### User-run command — retained for reproducibility
+### Page 2 — Delay Analysis
 
-The owner confirmed the Phase 3A pipeline completed with exit code `0`. JSON records PySpark `3.5.8`, `local[2]` and eight shuffle partitions. The command below is retained for reproducibility, not a request to rerun this completed phase. Use the working Phase 2 Java/Hadoop configuration; Codex has not executed these commands.
+![Delay Analysis — weekday, scheduled departure and attributed delay-minute shares](assets/dashboard_2.png)
 
-```powershell
-Set-Location "E:\airline_operations_analytics"
+**Purpose:** Explore when delays are observed and how BTS reporting categories contribute to attributed delay minutes.
 
+**Visuals:** Arrival delay rate by weekday, rate by scheduled departure band, and horizontal bars for attributed delay-minute shares.
+
+- **Weekday patterns vary by month.** The highest-rate weekday is Monday in January (16,002 / 70,684 = **22.64%**), Thursday in February (21,753 / 76,272 = **28.52%**) and Sunday in March (25,738 / 98,176 = **26.22%**).
+- **Evening has the highest observed rate in each month.** Its delayed/completed counts are 24,554 / 108,886 (**22.55%**), 27,018 / 106,095 (**25.47%**) and 36,344 / 137,594 (**26.41%**), respectively. This does not establish that later departures cause delays.
+- **The largest attributed-minute category changes.** Carrier delay leads January at 2,510,886 / 6,943,994 minutes (**36.16%**). Late-aircraft delay leads February at 2,735,511 / 7,411,011 (**36.91%**) and March at 3,281,080 / 8,378,368 (**39.16%**).
+
+Time bands use scheduled local departure time, not actual departure time. Cause analysis includes only completed flights with `ARR_DEL15 = 1`. **A cause-minute share is not a percentage of delayed flights**; one flight can have multiple reporting categories.
+
+Source and full comparisons: [Phase 3B findings](docs/phase3b_findings.md).
+
+### Page 3 — Performance Explorer
+
+![Performance Explorer — airlines, origin-airport volume and directed route-months](assets/dashboard_3.png)
+
+**Purpose:** Compare operational outcomes alongside flight volume without treating a small group's high rate as conclusive evidence.
+
+| Visualization | Measure and interpretation |
+|---|---|
+| Top 5 airlines by arrival delay rate | Highest observed rates, with a minimum of **1,000 completed flights** in the dashboard's selected reporting context |
+| Top 5 origin airports by completed volume | Number of completed departures, not a delay-rate ranking or a measure of airport-caused delays |
+| High-delay directed routes | Individual **YEAR, MONTH, ORIGIN, DEST** rows with at least **300 completed flights per route-month** |
+
+Even with all three months selected, route rows remain **route-months**, not a pooled quarterly route ranking. A → B and B → A are separate routes.
+
+The owner-supplied review screenshot shows OH leading the displayed airline delay-rate comparison and DEN leading origin completed-flight volume. Its February BNA → DCA row displays **303 completed flights and a 50.50% delay rate**. These are dashboard snapshot observations; exported numerators, exact airline/airport counts and filter-context reconciliation are still pending before final Phase 4 sign-off.
+
+The dashboard thresholds are analytical heuristics, not significance tests. They differ from the earlier SQL preview's default 30-flight threshold. The standalone SQL airline ranking orders lowest delay rate first; this dashboard deliberately highlights the highest rates. Neither changes the underlying aggregate counts.
+
+## 6. Verified Results & Data Quality
+
+All figures below cover January–March 2025. Counts are recorded in runtime evidence; percentages and the average are calculated from recorded totals and rounded for display. The Executive Overview screenshot agrees with these rounded KPI values, but that alone does not validate every dashboard interaction.
+
+| Metric | Verified value | Definition / evidence |
+|---|---:|---|
+| Total Flights | 1,645,503 | All input records; Phases 1–3A |
+| Completed Flights | 1,611,046 | Status = completed; Phases 1–3A |
+| Cancelled Flights | 30,640 | Status = cancelled; Phases 1–3A |
+| Diverted Flights | 3,817 | Status = diverted; Phases 1–3A |
+| Delayed Arrival Flights | 317,266 | Completed and ARR_DEL15 = 1; Phase 3A |
+| Arrival Delay Rate | 19.69% | 317,266 / 1,611,046 |
+| On-Time Arrival Rate | 80.31% | 1,293,780 / 1,611,046 |
+| Cancellation Rate | 1.86% | 30,640 / 1,645,503 |
+| Average Arrival Delay | 4.98 minutes | 8,030,228 signed minutes / 1,611,046 non-NULL completed-flight observations |
+
+The average includes early arrivals and is **not** the average positive delay among delayed flights. Its numerator is the sum of January, February and March signed delay totals: 1,961,963 + 2,839,311 + 3,228,954.
+
+| Validation area | Recorded result |
+|---|---|
+| Raw profiling | 0 cast failures, 0 exact duplicate groups, 0 candidate-key collision groups |
+| Cleaning and Parquet | All 1,645,503 rows retained; 38 columns; 15/15 pre-write and 9/9 read-back checks PASS |
+| Core SQL aggregates | All four outputs PASS, including bidirectional `EXCEPT ALL` value/multiplicity comparison |
+| Supplementary analytics | 30/30 checks PASS; CSV read-back rows match 21 / 12 / 15 |
+| Scheduled-time edge cases | Missing, Invalid and literal 2400 each have 0 observed rows in this dataset |
+
+Conditional NULLs are not automatically errors. The 3,407-minute arrival-delay extreme was retained rather than silently removed. No detected violations means **no violations of the implemented checks**, not perfect data.
+
+**Evidence:** Local `artifacts/phase1/profile_summary.json` and `artifacts/{phase2,phase3,phase3b}/validation_summary.json`. Phase 3A's `pre_write.baseline.actual_totals` and `read_back.tables.monthly_performance.by_month` support the KPI calculations above. Evidence files are excluded from Git; repository summaries remain available in the [profiling report](docs/data_quality_report.md), [cleaning report](docs/phase2_cleaning_report.md), [KPI definitions](docs/kpi_definitions.md) and [supplementary findings](docs/phase3b_findings.md). Those reports retain phase-specific historical context; current project status is below.
+
+## 7. Project Structure & How to Run
+
+~~~text
+airline_operations_analytics/
+├── README.md
+├── MASTER_PROMPT.md
+├── requirements.txt
+├── scripts/                    # Profiling, cleaning, analytics and Parquet smoke test
+├── src/airline_analytics/       # Schema, ingestion, profiling, cleaning and validation
+├── sql/analytics/              # 000–010: KPI summaries and business queries
+├── docs/                       # Data dictionary, quality reports, definitions and findings
+├── dashboard/                  # Final three-page PBIX report
+├── assets/                     # Actual dashboard screenshots embedded above
+├── data/                       # Local raw, processed and analytical datasets
+└── artifacts/                  # Local validation JSON and supplementary CSV outputs
+~~~
+
+### Environment and input
+
+Use Python 3.11, Java 17 with `JAVA_HOME` configured, and the dependencies in [requirements.txt](requirements.txt). The following PowerShell commands are **owner-run instructions**, not automatically executed steps.
+
+From the repository root, create a virtual environment only if one does not already exist:
+
+~~~powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+~~~
+
+Download the three monthly CSVs from BTS and place them under `data/raw/` as `reporting_carrier_ontime_2025_01.csv`, `reporting_carrier_ontime_2025_02.csv` and `reporting_carrier_ontime_2025_03.csv`. Use the selected fields in the data dictionary. Ingestion enforces the exact original export metadata in [schema.py](src/airline_analytics/schema.py); a re-export with different bytes must be independently reviewed rather than bypassing checksum validation.
+
+### Run the processing stages
+
+Configure the current PowerShell session:
+
+~~~powershell
 $projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
 $sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
 $env:PYSPARK_PYTHON = $projectPython
 $env:PYSPARK_DRIVER_PYTHON = $projectPython
 $env:PYTHONPATH = (Resolve-Path ".\src").Path
+$sparkOptions = @("--master", "local[2]", "--driver-memory", "4g")
+~~~
 
-& $projectPython --version
-java -version
-& $projectPython -c "import pyspark; print(pyspark.__version__)"
-Test-Path ".\data\processed\flights_cleaned"
-Test-Path ".\artifacts\phase2\validation_summary.json"
-Test-Path ".\data\analytics"
-Test-Path ".\artifacts\phase3\validation_summary.json"
+Run **one command at a time**, inspect its report, and stop if `$LASTEXITCODE` is nonzero. Defaults use the paths shown above and each stage consumes the previous stage's evidence where required.
 
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "4g" `
-    ".\scripts\build_analytics.py" `
-    --input-dir ".\data\processed\flights_cleaned" `
-    --phase2-report ".\artifacts\phase2\validation_summary.json" `
-    --output-dir ".\data\analytics" `
-    --validation-output ".\artifacts\phase3\validation_summary.json" `
-    --min-completed-flights 30 `
-    --preview-rows 20
+~~~powershell
+# 1. Raw profiling
+& $sparkSubmit @sparkOptions ".\scripts\profile_raw_data.py"
 
-$phase3ExitCode = $LASTEXITCODE
-Write-Host "Phase 3A exit code: $phase3ExitCode"
-Get-Content ".\artifacts\phase3\validation_summary.json" -Raw
-```
+# 2. Optional first-time Windows Parquet environment check
+& $sparkSubmit @sparkOptions ".\scripts\smoke_test_parquet.py"
 
-The analytics output directory and Phase 3 report now exist after the successful run. An identical rerun is refused by the existing-output safeguards. Any deliberate rerun requires fresh output/report paths or owner-managed handling of prior artifacts; there is no automatic deletion. An argument/path preflight refusal exits before creating a report. In a failed future run, the reached stage is recorded and partial outputs are retained; stages not reached remain `NOT_RUN`.
+# 3. Typed cleaning and Parquet validation
+& $sparkSubmit @sparkOptions ".\scripts\build_cleaned_parquet.py"
 
-### Acceptance checklist — verified execution and owner-confirmed Git push
+# 4. Four core aggregate tables and bounded business-query previews
+& $sparkSubmit @sparkOptions ".\scripts\build_analytics.py"
 
-- [x] Four core aggregate SQL outputs and three business SQL queries prepared.
-- [x] KPI definitions, denominator rules and validation code prepared.
-- [x] Owner ran and verified the Phase 3A pipeline: exit code `0`, JSON `PASS`.
-- [x] Monthly totals reconcile to 1,645,503 and the Phase 2 status/month counts.
-- [x] Airline/origin/route counts reconcile to monthly; schema, grain, formula and NULL checks pass.
-- [x] All four Parquet outputs pass read-back schema/count/value checks.
-- [x] All three business queries executed bounded previews.
-- [x] Monthly findings are documented from JSON counts with derived rates labeled.
-- [ ] Carrier ranking, AA MoM and January route examples await the existing preview rows as evidence.
-- [ ] Full three-month business-query results have been reviewed (not claimed by preview execution).
-- [x] Phase 3A changes have been committed and pushed at `5aa27ea` (owner-confirmed).
+# 5. Weekday, departure-band and cause-minute analysis
+& $sparkSubmit @sparkOptions ".\scripts\run_phase3b.py"
+~~~
 
-Phase 3A is closed. Its specific carrier/route examples still await preview evidence; existing findings and the four validated outputs remain unchanged by Phase 3B.
+Large datasets, local evidence and environment files are excluded by [.gitignore](.gitignore). Cleaning, smoke-test and analytics scripts refuse existing output paths; choose fresh paths through their CLI arguments for a deliberate rerun. The raw profiler writes its specified JSON path, so preserve existing evidence before rerunning it. Do not automatically delete prior outputs.
 
-## 16. Phase 3B — Additional Business Analytics
+### Open the dashboard
 
-**Status: Implementation and runtime validation completed; pending Git commit.** Phase 3B reads existing cleaned Parquet and does not rebuild or modify Phase 3A code or outputs.
+Open [Airline_Operations_Analytics_final.pbix](dashboard/Airline_Operations_Analytics_final.pbix) in Power BI Desktop. The dashboard uses local Parquet/CSV outputs; check and update Power Query source paths to your own generated files before refresh. A new Spark run may produce different part filenames.
 
-| SQL | Business question | Grain |
-|---|---|---|
-| `008_day_of_week.sql` | Which weekdays have higher observed arrival delay rates? | YEAR, MONTH, DAY_OF_WEEK (1=Monday through 7=Sunday) |
-| `009_departure_time_band.sql` | How do arrival delay rates differ by scheduled departure band? | YEAR, MONTH, time_band |
-| `010_delay_causes.sql` | Which recorded causes account for larger shares of attributed delay minutes? | YEAR, MONTH, cause_category |
+The saved PBIX report layout contains all three documented pages. No PBIP project is currently present in the repository. Checking the saved page layout and screenshots confirms page availability, not successful refresh, DAX correctness in every filter context or slicer behavior.
 
-The first two queries retain total/completed/delayed counts and use completed flights as the rate denominator. Time bands use CRS_DEP_TIME strings: Night 0000–0559, Morning 0600–1159, Afternoon 1200–1759, Evening 1800–2359. Literal 2400 maps to Night without changing the source date/month; Missing and Invalid groups retain other problematic values.
+## 8. Project Status & Next Steps
 
-Cause analysis includes only completed ARR_DEL15=1 flights. It preserves unreported NULLs, exposes coverage counts and divides each category's reported minutes by all reported cause minutes in the month. Minute share is not a percentage of flights caused to be delayed, and no equality to signed ARR_DELAY is assumed.
+| Phase | Status |
+|---|---|
+| 0 — Scope and environment | Completed |
+| 1 — Acquisition and profiling | Completed and verified |
+| 2 — Cleaning and Parquet | Completed and runtime-validated |
+| 3A — Core SQL analytics | Completed and runtime-validated |
+| 3B — Supplementary analytics | Completed and runtime-validated |
+| 4 — Power BI | Three pages built; testing, reconciliation and portfolio polish in progress |
+| 5 — Machine Learning | Planned; no training or evaluation results |
 
-`scripts/run_phase3b.py` produced three small CSV exports under `artifacts/phase3b/`, with `validation_summary.json` beside them. It refuses an existing output directory and retains partial outputs on failure. No new Parquet table was created in `data/analytics/`. See [Phase 3B definitions and verified findings](docs/phase3b_findings.md) for schemas, validation details, evidence and limitations.
+Before final portfolio publication:
 
-### Verified execution and source counts
+1. Review and publish the saved three-page PBIX and the actual dashboard screenshots alongside this README.
+2. Reconcile all-month and single-month DAX outputs with Spark results, including Top 5 filters, thresholds, route-month grain and ties.
+3. Retain Performance Explorer exports with delayed/completed counts and filter context; keep static findings clearly labeled.
+4. Finalize portable data-source instructions and owner sign-off. ML remains a separate planned phase using pre-departure features and temporal evaluation.
 
-Evidence: `artifacts/phase3b/validation_summary.json`, generated at `2026-10-10T06:38:06.713552+00:00`, and all three generated CSV data part files. JSON records Spark `3.5.8`, `local[2]`, input/overall `PASS`, 1,645,503 input rows, `failure_stage = null`, `failed_checks = []` and `errors = []`. All **30/30** recorded check booleans are true. Exit code **0** is owner-confirmed, not a JSON field.
+## 9. Limitations
 
-| CSV output | Output / read-back rows | Validation |
-|---|---:|---|
-| day_of_week | 21 / 21 | PASS |
-| departure_time_band | 12 / 12 | PASS |
-| delay_causes | 15 / 15 | PASS |
-
-Required input schema, grouping/grain, monthly reconciliation, rate formulas, cause coverage/minutes/shares and CSV count/value preservation passed the implemented checks. CSV read-back used explicit SQL result types, not inferred types.
-
-| Month (2025) | Total flights | Completed flights | Delayed completed flights |
-|---|---:|---:|---:|
-| January | 539,747 | 522,269 | 98,130 |
-| February | 504,884 | 496,476 | 103,102 |
-| March | 600,872 | 592,301 | 116,034 |
-
-These counts are direct JSON values. Their three-month sums are 1,645,503 total, 1,611,046 completed and 317,266 delayed completed flights (derived). Weekday and time-band counts reconcile to each month. Scheduled departure **Missing, Invalid and literal 2400 each have zero observed rows in every month**; therefore those nonempty edge cases were not exercised by this dataset.
-
-### Business findings — observed, not causal
-
-Counts/minutes below are direct CSV evidence. Percentages display unrounded CSV fractions multiplied by 100 and rounded to two decimals; comparisons use the unrounded values.
-
-- **Weekdays:** The highest observed rate changes from Monday in January (16,002 / 70,684 completed flights = **22.64%**) to Thursday in February (21,753 / 76,272 = **28.52%**) and Sunday in March (25,738 / 98,176 = **26.22%**). There is no single highest-rate weekday across all three months.
-- **Scheduled departure bands:** Evening has the highest observed rate in every month: January 24,554 / 108,886 = **22.55%**; February 27,018 / 106,095 = **25.47%**; March 36,344 / 137,594 = **26.41%**. Night has the lowest in each month, with fewer completed flights; full numerator/denominator comparisons are in the findings report.
-- **Attributed delay causes:** January's largest category is CARRIER_DELAY, **2,510,886 / 6,943,994 attributed minutes = 36.16%**. LATE_AIRCRAFT_DELAY is largest in February (**2,735,511 / 7,411,011 = 36.91%**) and March (**3,281,080 / 8,378,368 = 39.16%**). These are minute shares, not percentages of delayed flights caused by a category.
-- **Cause reporting coverage:** All five fields are non-NULL for 98,130 / 98,130 January, 103,102 / 103,102 February and 116,034 / 116,034 March eligible flights (100% coverage, derived). Reported zeros count toward coverage; coverage does not mean each cause has positive minutes on every flight.
-
-These are observations from January–March 2025 only, without causal adjustment, statistical significance testing or predictive evaluation. Carrier/route/airport composition and local scheduled times can differ across groups. Completed-flight rates exclude cancelled/diverted flights. Three months do not establish a long-term trend, and validation PASS does not establish perfect data or production performance. Power BI and Machine Learning remain not started.
-
-### Owner-run command — retained for reproducibility
-
-The owner completed execution successfully. The commands below document the workflow, not a request to rerun it. The output directory now exists, so an identical rerun is refused. Keep the working Java/Hadoop configuration; Codex has not executed these commands.
-
-```powershell
-Set-Location "E:\airline_operations_analytics"
-$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
-$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
-$env:PYSPARK_PYTHON = $projectPython
-$env:PYSPARK_DRIVER_PYTHON = $projectPython
-
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "4g" `
-    ".\scripts\run_phase3b.py" `
-    --input-dir ".\data\processed\flights_cleaned" `
-    --output-dir ".\artifacts\phase3b"
-
-$phase3bExitCode = $LASTEXITCODE
-Write-Host "Phase 3B exit code: $phase3bExitCode"
-Get-Content ".\artifacts\phase3b\validation_summary.json" -Raw
-Get-ChildItem ".\artifacts\phase3b" -Recurse -Filter "*.csv"
-```
-
-- [x] Three SQL queries, one runner and findings documentation prepared.
-- [x] Owner executed the runner successfully: exit code 0.
-- [x] Source/group reconciliation, rate/coverage rules and CSV read-back are verified; 30/30 checks PASS.
-- [x] Actual findings are documented from the generated JSON and all three CSV outputs.
-- [ ] Phase 3B changes have been committed to Git.
-
-**Current stop point:** Phase 3B implementation and runtime validation completed; pending Git commit. Power BI and Machine Learning have not started. No pipeline rerun or Git operation was performed to finalize these documents.
+- Coverage is January–March 2025 only; it does not establish full-year seasonality or a long-term trend.
+- Correlation does not imply causation. Carrier, airport and route mix may explain observed differences.
+- Arrival delay/on-time rates exclude cancelled and diverted flights; they do not capture all passenger disruption.
+- Flight-volume thresholds are adjustable analytical heuristics, not statistical confidence guarantees.
+- Delay-cause shares measure attributed **minutes**, not shares of flights. Non-NULL reporting can include zero minutes.
+- Aggregate grains limit cross-filtering; separate summaries must not be combined in ways that double-count flights.
+- Dashboard validation is ongoing. No production benchmark or ML performance results have been established.
