@@ -1,6 +1,6 @@
 # Phase 1 Data Quality Report
 
-> **Status:** Phase 1 profiling execution is complete. Documentation is ready and is waiting for project-owner confirmation before the phase is formally closed.
+> **Status:** Phase 1 is complete, confirmed by the project owner, and committed/pushed in Git commit `3403d4d`.
 
 ## 1. Scope and evidence
 
@@ -105,4 +105,4 @@ The denominator is explicitly the **1,611,046 completed flights**, not all 1,645
 
 ## 11. Phase status
 
-Phase 1 is **complete for data acquisition and profiling**. The documentation is waiting for the project owner's confirmation before formal close-out. **Phase 2 has not started.**
+Phase 1 is formally closed and remains the evidence baseline for raw-data profiling. Phase 2 cleaning and Parquet validation subsequently completed successfully; its runtime results are documented separately in `docs/phase2_cleaning_report.md` and `artifacts/phase2/validation_summary.json`.

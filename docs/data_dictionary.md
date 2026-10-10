@@ -1,6 +1,6 @@
-# Phase 1 Data Dictionary
+# BTS Flight Data Dictionary
 
-**Status:** Header and logical-type contract validated by the completed Phase 1 profile.
+**Status:** Raw 36-column contract validated in Phase 1; cleaned 38-column Spark schema validated by the successful Phase 2 Parquet read-back.
 
 The January, February, and March 2025 raw CSV files have the same verified 36-column header in the same order. Phase 1 loads every source column as a Spark string so malformed values remain measurable. The logical types below are a validation contract based on BTS definitions and the observed January sample; they are not proof that every row conforms.
 
@@ -98,8 +98,21 @@ The January, February, and March 2025 raw CSV files have the same verified 36-co
 - The three monthly files contain 1,645,503 records and the same 36-column schema.
 - The profiler reported zero logical-type cast failures.
 - The implemented date, HHMM, binary-flag, distance and derived-delay consistency rules reported zero violations.
-- `ARR_DEL15` is missing for 34,457 records, exactly matching 30,640 canceled plus 3,817 diverted flights. This is structurally consistent with the completed-flight label scope.
+- `ARR_DEL15` is missing for 34,457 records, numerically matching 30,640 canceled plus 3,817 diverted flights in aggregate. This does not prove row-level alignment; Phase 2 checks the rule row by row.
 - `CANCELLATION_CODE`, delay-cause fields and operational actual-time fields remain conditionally nullable. Their nulls are not classified as errors without the relevant flight-status condition.
 - `ARR_DELAY` has an observed maximum of 3,407 minutes. The dictionary retains `double` as its logical type; the extreme value is flagged for contextual review rather than automatically rejected.
 
 These conclusions validate the current parsing contract only. They do not prove that every semantic value is correct or that the implemented rules cover every possible data-quality issue.
+
+## Verified Phase 2 cleaned schema
+
+The cleaned dataset contains the 36 BTS source columns plus retained `_source_file` and derived `flight_status`, for **38 columns total**. It was written to `data/processed/flights_cleaned/` as Snappy-compressed Parquet partitioned by `YEAR` and `MONTH`, then read back successfully.
+
+| Spark type | Verified cleaned columns |
+|---|---|
+| `DateType` | `FL_DATE` |
+| `IntegerType` | `YEAR`, `MONTH`, `DAY_OF_WEEK`, `OP_CARRIER_AIRLINE_ID`, `ORIGIN_AIRPORT_ID`, `ORIGIN_AIRPORT_SEQ_ID`, `ORIGIN_CITY_MARKET_ID`, `DEST_AIRPORT_ID`, `DEST_AIRPORT_SEQ_ID`, `DEST_CITY_MARKET_ID`, `DEP_DEL15`, `ARR_DEL15`, `CANCELLED`, `DIVERTED` |
+| `DoubleType` | `DEP_DELAY`, `ARR_DELAY`, `ARR_DELAY_NEW`, `DISTANCE`, `CARRIER_DELAY`, `WEATHER_DELAY`, `NAS_DELAY`, `SECURITY_DELAY`, `LATE_AIRCRAFT_DELAY` |
+| `StringType` | All remaining BTS identifiers, codes, city names and HHmm fields, plus `_source_file` and `flight_status` |
+
+Phase 2 recorded zero introduced cast nulls and zero violations of the implemented row-level `ARR_DEL15` rules. Conditional source nulls remain valid where allowed; these results do not imply that every field is non-null or that the dataset is perfect.
