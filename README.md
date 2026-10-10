@@ -141,37 +141,7 @@ The owner-supplied review screenshot shows OH leading the displayed airline dela
 
 The dashboard thresholds are analytical heuristics, not significance tests. They differ from the earlier SQL preview's default 30-flight threshold. The standalone SQL airline ranking orders lowest delay rate first; this dashboard deliberately highlights the highest rates. Neither changes the underlying aggregate counts.
 
-## 6. Verified Results & Data Quality
-
-All figures below cover January–March 2025. Counts are recorded in runtime evidence; percentages and the average are calculated from recorded totals and rounded for display. The Executive Overview screenshot agrees with these rounded KPI values, but that alone does not validate every dashboard interaction.
-
-| Metric | Verified value | Definition / evidence |
-|---|---:|---|
-| Total Flights | 1,645,503 | All input records; Phases 1–3A |
-| Completed Flights | 1,611,046 | Status = completed; Phases 1–3A |
-| Cancelled Flights | 30,640 | Status = cancelled; Phases 1–3A |
-| Diverted Flights | 3,817 | Status = diverted; Phases 1–3A |
-| Delayed Arrival Flights | 317,266 | Completed and ARR_DEL15 = 1; Phase 3A |
-| Arrival Delay Rate | 19.69% | 317,266 / 1,611,046 |
-| On-Time Arrival Rate | 80.31% | 1,293,780 / 1,611,046 |
-| Cancellation Rate | 1.86% | 30,640 / 1,645,503 |
-| Average Arrival Delay | 4.98 minutes | 8,030,228 signed minutes / 1,611,046 non-NULL completed-flight observations |
-
-The average includes early arrivals and is **not** the average positive delay among delayed flights. Its numerator is the sum of January, February and March signed delay totals: 1,961,963 + 2,839,311 + 3,228,954.
-
-| Validation area | Recorded result |
-|---|---|
-| Raw profiling | 0 cast failures, 0 exact duplicate groups, 0 candidate-key collision groups |
-| Cleaning and Parquet | All 1,645,503 rows retained; 38 columns; 15/15 pre-write and 9/9 read-back checks PASS |
-| Core SQL aggregates | All four outputs PASS, including bidirectional `EXCEPT ALL` value/multiplicity comparison |
-| Supplementary analytics | 30/30 checks PASS; CSV read-back rows match 21 / 12 / 15 |
-| Scheduled-time edge cases | Missing, Invalid and literal 2400 each have 0 observed rows in this dataset |
-
-Conditional NULLs are not automatically errors. The 3,407-minute arrival-delay extreme was retained rather than silently removed. No detected violations means **no violations of the implemented checks**, not perfect data.
-
-**Evidence:** Local `artifacts/phase1/profile_summary.json` and `artifacts/{phase2,phase3,phase3b}/validation_summary.json`. Phase 3A's `pre_write.baseline.actual_totals` and `read_back.tables.monthly_performance.by_month` support the KPI calculations above. Evidence files are excluded from Git; repository summaries remain available in the [profiling report](docs/data_quality_report.md), [cleaning report](docs/phase2_cleaning_report.md), [KPI definitions](docs/kpi_definitions.md) and [supplementary findings](docs/phase3b_findings.md). Those reports retain phase-specific historical context; current project status is below.
-
-## 7. Project Structure & How to Run
+## 6. Project Structure & How to Run
 
 ~~~text
 airline_operations_analytics/
@@ -240,32 +210,3 @@ Large datasets, local evidence and environment files are excluded by [.gitignore
 Open [Airline_Operations_Analytics_final.pbix](dashboard/Airline_Operations_Analytics_final.pbix) in Power BI Desktop. The dashboard uses local Parquet/CSV outputs; check and update Power Query source paths to your own generated files before refresh. A new Spark run may produce different part filenames.
 
 The saved PBIX report layout contains all three documented pages. No PBIP project is currently present in the repository. Checking the saved page layout and screenshots confirms page availability, not successful refresh, DAX correctness in every filter context or slicer behavior.
-
-## 8. Project Status & Next Steps
-
-| Phase | Status |
-|---|---|
-| 0 — Scope and environment | Completed |
-| 1 — Acquisition and profiling | Completed and verified |
-| 2 — Cleaning and Parquet | Completed and runtime-validated |
-| 3A — Core SQL analytics | Completed and runtime-validated |
-| 3B — Supplementary analytics | Completed and runtime-validated |
-| 4 — Power BI | Three pages built; testing, reconciliation and portfolio polish in progress |
-| 5 — Machine Learning | Planned; no training or evaluation results |
-
-Before final portfolio publication:
-
-1. Review and publish the saved three-page PBIX and the actual dashboard screenshots alongside this README.
-2. Reconcile all-month and single-month DAX outputs with Spark results, including Top 5 filters, thresholds, route-month grain and ties.
-3. Retain Performance Explorer exports with delayed/completed counts and filter context; keep static findings clearly labeled.
-4. Finalize portable data-source instructions and owner sign-off. ML remains a separate planned phase using pre-departure features and temporal evaluation.
-
-## 9. Limitations
-
-- Coverage is January–March 2025 only; it does not establish full-year seasonality or a long-term trend.
-- Correlation does not imply causation. Carrier, airport and route mix may explain observed differences.
-- Arrival delay/on-time rates exclude cancelled and diverted flights; they do not capture all passenger disruption.
-- Flight-volume thresholds are adjustable analytical heuristics, not statistical confidence guarantees.
-- Delay-cause shares measure attributed **minutes**, not shares of flights. Non-NULL reporting can include zero minutes.
-- Aggregate grains limit cross-filtering; separate summaries must not be combined in ways that double-count flights.
-- Dashboard validation is ongoing. No production benchmark or ML performance results have been established.
