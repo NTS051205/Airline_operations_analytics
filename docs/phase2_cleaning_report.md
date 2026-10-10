@@ -1,6 +1,6 @@
 # Phase 2 Cleaning and Parquet Report
 
-> **Status:** Implementation and runtime validation completed successfully; pending Git commit and final project-owner sign-off.
+> **Status:** Completed and confirmed by the project owner; committed and pushed (code `6c50b00`, documentation `4a9e907`, as reported by the owner).
 
 ## 1. Scope and evidence boundary
 
@@ -170,7 +170,7 @@ The successful Windows run used Hadoop 3.3.4 Windows utilities. These local envi
 - No duplicate removal, outlier treatment, KPI calculation, Power BI work, feature engineering, or Machine Learning is included.
 - Zero introduced cast nulls does not mean the dataset contains no legitimate conditional nulls.
 - Zero `ARR_DEL15` violations applies only to the implemented row-level rules.
-- Phase 3 has not started. Phase 2 remains pending Git commit and final project-owner sign-off.
+- Phase 2 is closed, committed and pushed. Phase 3A implementation and runtime validation are complete, pending Git commit; Phase 3B and later phases have not started.
 
 ## 10. Interview practice
 
