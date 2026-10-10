@@ -34,19 +34,7 @@ A delayed arrival is a completed flight with `ARR_DEL15 = 1` (at least 15 minute
 
 See the [data dictionary](docs/data_dictionary.md) for fields and types.
 
-## 3. Tech Stack
-
-| Technology | Role | Status |
-|---|---|---|
-| Python 3.11.9 / PySpark 3.5.8 | Profiling, typed cleaning and validation | Used |
-| Spark SQL | KPI aggregation, rankings, month-over-month and delay analysis | Used |
-| Apache Parquet / Snappy | Typed cleaned data and core analytical outputs | Used |
-| Power BI / DAX | Three-page dashboard and ratio-of-sums measures | Built; validation in progress |
-| Spark MLlib | Leakage-aware flight-delay classification | Planned |
-
-Verified processing environment: Windows 11, Java 17, Spark `local[2]` with a 4 GB driver. Parquet write/read succeeded with locally configured Hadoop 3.3.4 Windows utilities. This is a local implementation, not a distributed-cluster benchmark.
-
-## 4. Data Pipeline & Architecture
+## 3. Data Pipeline & Architecture
 
 ~~~mermaid
 flowchart LR
@@ -79,7 +67,7 @@ flowchart LR
 
 The first four are Parquet outputs under `data/analytics/`; the last three are small CSV outputs under `artifacts/phase3b/`. No flight-level dataset is collected into Pandas.
 
-## 5. Power BI Dashboard & Business Insights
+## 4. Power BI Dashboard & Business Insights
 
 Three pages have been built by the project owner. The saved [Power BI report](dashboard/Airline_Operations_Analytics_final.pbix) contains Executive Overview, Delay Analysis and Performance Explorer, matching the screenshots below. Final filter-context reconciliation and presentation review are still in progress.
 
@@ -141,7 +129,7 @@ The owner-supplied review screenshot shows OH leading the displayed airline dela
 
 The dashboard thresholds are analytical heuristics, not significance tests. They differ from the earlier SQL preview's default 30-flight threshold. The standalone SQL airline ranking orders lowest delay rate first; this dashboard deliberately highlights the highest rates. Neither changes the underlying aggregate counts.
 
-## 6. Project Structure & How to Run
+## 5. Project Structure & How to Run
 
 ~~~text
 airline_operations_analytics/
