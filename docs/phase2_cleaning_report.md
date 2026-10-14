@@ -1,181 +1,205 @@
-# Phase 2 Cleaning and Parquet Report
+# Data Cleaning và chuẩn bị Cleaned Parquet
 
-> **Status:** Completed and confirmed by the project owner; committed and pushed (code `6c50b00`, documentation `4a9e907`, as reported by the owner).
+## 1. Mục tiêu: nhất quán mà không làm thay đổi quần thể phân tích
 
-## 1. Scope and evidence boundary
+Dữ liệu BTS nguồn có flag dạng `"0.00"`, ngày ở dạng chuỗi và những NULL phù hợp với chuyến hủy/chuyển hướng. Phase 2 chuyển nguồn này thành dữ liệu có kiểu rõ ràng, nhưng giữ nguyên ý nghĩa nghiệp vụ và số bản ghi.
 
-Phase 2 prepares this local PySpark flow:
+Đầu ra phải dùng được cho cả phân tích tỷ lệ trễ **trên completed flights** và tỷ lệ hủy **trên toàn bộ flights**. Vì vậy cleaning không được xóa cancelled/diverted chỉ để làm bảng đầy đủ hơn.
 
-```text
-BTS raw CSV -> typed cleaning -> pre-write validation
-            -> partitioned Parquet -> read-back validation
-```
+~~~mermaid
+flowchart LR
+    A[Raw BTS CSV] --> B[Kiểm tra nguồn và đọc string]
+    B --> C[Chuẩn hóa blank và parse kiểu]
+    C --> D[Phân loại flight_status]
+    D --> E[Pre-write validation]
+    E --> F[Parquet Snappy theo YEAR/MONTH]
+    F --> G[Read-back validation]
+~~~
 
-The verified Phase 1 baseline remains `artifacts/phase1/profile_summary.json`. The project owner ran both Phase 2 commands and supplied the verified results from `artifacts/phase2/validation_summary.json`. Metrics in this report describe that run; they are not inferred from code inspection.
+Ý nghĩa trường ở [Data Dictionary](data_dictionary.md); căn cứ không deduplicate hay loại outlier ở [Data Quality Report](data_quality_report.md). Tài liệu này giải thích các transformation thực sự triển khai và mức đảm bảo của read-back.
 
-## 2. Input and output
+## 2. Đầu vào, đầu ra và trách nhiệm code
 
-| Purpose | Default path | Behavior |
-|---|---|---|
-| Raw input | `data/raw/` | Three verified BTS CSV files; never modified |
-| Phase 1 baseline | `artifacts/phase1/profile_summary.json` | Read-only count baseline |
-| Cleaned output | `data/processed/flights_cleaned/` | Successfully written and read back |
-| Validation report | `artifacts/phase2/validation_summary.json` | Runtime evidence reviewed by the project owner |
-| Parquet smoke output | `artifacts/phase2/parquet_smoke_test/` | Small environment test completed successfully |
+| Thành phần | Vai trò |
+| --- | --- |
+| `data/raw/reporting_carrier_ontime_2025_01.csv`, `..._02.csv`, `..._03.csv` | Nguồn raw; chỉ đọc, không ghi đè. |
+| `artifacts/phase1/profile_summary.json` | Baseline counts theo tháng và trạng thái từ Phase 1. |
+| `data/processed/flights_cleaned/` | Dataset Parquet có 38 cột, partition theo `YEAR/MONTH`, compression Snappy. |
+| `artifacts/phase2/validation_summary.json` | Counts, schema, cast/NULL issues, checks và trạng thái từng giai đoạn. |
+| [ingestion.py](../src/airline_analytics/ingestion.py), [schema.py](../src/airline_analytics/schema.py) | Tái sử dụng kiểm tra tên/kích thước/header/checksum và đọc CSV; không khai báo lại schema nguồn. |
+| [cleaning.py](../src/airline_analytics/cleaning.py) | `normalized_text`, `safe_binary_flag`, `typed_column`, `clean_flights`. |
+| [validation.py](../src/airline_analytics/validation.py) | Thu thập counts, kiểm tra kiểu, NULL mới phát sinh, domain và nhãn từng dòng. |
+| [build_cleaned_parquet.py](../scripts/build_cleaned_parquet.py) | Điều phối baseline → transform → kiểm tra → ghi → đọc lại → báo cáo. |
 
-Parquet uses Snappy compression and partitions by `YEAR` and `MONTH`. The three-month MVP is repartitioned to three shuffle partitions before the write to limit small files without forcing all data into one file.
+Baseline được đọc từ JSON, không hardcode counts thành phép sửa dữ liệu cho khớp. Đường dẫn mặc định là đường dẫn project, không buộc người dùng khác phải có ổ đĩa Windows giống máy phát triển.
 
-### Verified runtime environment
+## 3. Chuẩn hóa kiểu và missing values
 
-| Item | Verified result |
-|---|---|
-| OS | Windows 11 |
-| PySpark | 3.5.8 |
-| Windows Hadoop utilities | Hadoop 3.3.4 utilities configured |
-| Parquet smoke test | PASS; exit code `0` |
-| Full cleaning pipeline | PASS; exit code `0` |
+### 3.1. Chuẩn hóa văn bản trước khi chuyển kiểu
 
-The successful run verifies local Parquet write/read for this project environment. Hadoop utility binaries remain local environment prerequisites and are not committed to Git.
+`normalized_text` trim khoảng trắng đầu/cuối và đổi NULL hoặc chuỗi rỗng sau trim thành NULL. Không sửa nội dung bên trong tên thành phố, không thay mã hãng, không tự điền giá trị thiếu.
 
-## 3. Cleaning rules
+NULL nguồn được giữ lại nếu phù hợp nghiệp vụ. “Không phát sinh NULL do cast” khác với “không còn NULL trong dữ liệu”.
 
-### Types and normalized values
+| Nhóm | Transformation thực tế | Lý do |
+| --- | --- | --- |
+| `YEAR`, `MONTH`, `DAY_OF_WEEK` và numeric IDs | Cast `IntegerType` | So sánh, nhóm và hợp đồng kiểu nhất quán. ID vẫn là định danh, không phải số đo. |
+| `FL_DATE` | `to_timestamp` với `M/d/yyyy h:mm:ss a` rồi `to_date` | Parse rõ định dạng nguồn, tránh phụ thuộc suy luận ngày tự động. |
+| `DEP_DELAY`, `ARR_DELAY`, `ARR_DELAY_NEW`, `DISTANCE` và năm cause fields | Cast `DoubleType` | Giữ số đo và dấu của delay; hỗ trợ aggregate numeric. |
+| Bốn flag | Parse double → chỉ nhận 0/1 → cast integer | Giữ `"0.00"`, `"1.00"` hợp lệ; không vô tình cắt phần lẻ thành nhãn hợp lệ. |
+| Codes, flight number, tail number, tên thành phố | String sau chuẩn hóa blank | Bảo toàn định danh và văn bản. |
+| Bốn trường HHmm | String, trim only | Không mất leading zeros; không tự diễn giải giờ thành timestamp. |
 
-- Whitespace-only raw strings become `NULL`; other strings are trimmed.
-- `YEAR`, `MONTH`, `DAY_OF_WEEK`, airline ID, and airport/city-market IDs become `IntegerType`.
-- `FL_DATE` is parsed with `M/d/yyyy h:mm:ss a` and stored as `DateType`.
-- Delay minutes, distance, and delay-cause minutes become `DoubleType`.
-- `DEP_DEL15`, `ARR_DEL15`, `CANCELLED`, and `DIVERTED` become `IntegerType` values `0`, `1`, or `NULL`.
-- Source flag strings such as `"0.00"` and `"1.00"` are accepted. Other nonblank numeric values are not truncated; they cause validation failure.
-- Flight numbers, carrier/airport/tail codes, names, cancellation code, and the four HHmm fields remain strings.
-- HHmm values are trimmed only. Leading zeros and literal `2400` are preserved; they are not converted to integers or timestamps.
+Ví dụ minh họa logic, không phải lỗi đã quan sát: `"0.00" → 0` là đúng; `"0.50"` không được cast trực tiếp thành 0. `safe_binary_flag` chỉ trả về integer khi số parse được thuộc `{0,1}`. Giá trị không hợp lệ trở thành NULL trong biểu thức transformation và được validation nhận diện là vi phạm, khiến job dừng trước khi ghi.
 
-### Missing values
+### 3.2. Đo NULL mới phát sinh
 
-- Conditional `NULL` values are retained.
-- `ARR_DEL15`, cancellation code, and delay-cause fields are not imputed.
-- No generic imputation framework is introduced.
+Với mỗi cột cần cast, báo cáo lưu:
 
-### Flight status
+- `source_nulls`: số NULL sau chuẩn hóa văn bản.
+- `target_nulls`: số NULL sau chuyển kiểu.
+- `introduced_nulls`: số dòng nguồn có giá trị nhưng đích thành NULL.
 
-| Typed flags | `flight_status` |
-|---|---|
-| `CANCELLED=0`, `DIVERTED=0` | `completed` |
-| `CANCELLED=1`, `DIVERTED=0` | `cancelled` |
-| `CANCELLED=0`, `DIVERTED=1` | `diverted` |
-| Any other combination | `invalid` |
+Điều kiện thứ ba là kiểm tra ở từng dòng, không chỉ lấy chênh lệch hai tổng. Kết quả đã lưu: `unexpected_cast_nulls_total = 0`.
 
-All valid completed, cancelled, and diverted rows are retained. An `invalid` row makes pre-write validation fail; the pipeline does not silently repair it.
+Không điền `ARR_DEL15` thiếu thành 0; không điền cancellation code; không `COALESCE` delay causes về 0. Các thao tác này sẽ biến “không có/không áp dụng” thành một kết quả nghiệp vụ không được nguồn xác nhận.
 
-### Duplicates, extremes, and grain
+### 3.3. Bảo toàn HHmm
 
-- No `dropDuplicates()` is used because Phase 1 found zero exact duplicates.
-- Candidate-key collisions are not removed.
-- `ARR_DELAY = 3,407` minutes is retained; no cap, clip, or arbitrary outlier threshold is applied.
-- One cleaned row corresponds to one raw row.
-- `_source_file` is retained for lineage.
-- No surrogate key, star schema, analytical mart, or ML feature is created.
+`"0015"` phải giữ nguyên string bốn ký tự; `"2400"` được giữ nguyên, không đổi ngày bay. Validation chấp nhận HHmm hợp lệ trong `0000–2359` hoặc `2400`. Một chuỗi thiếu chữ số không được tự zero-pad cho qua kiểm tra.
 
-## 4. Verified cleaned schema
+Đây không phải bước dựng timestamp đa múi giờ. Nếu sau này cần tính thời gian bay từ actual times, phải bổ sung ngữ cảnh ngày/múi giờ phù hợp, không trừ trực tiếp hai chuỗi hoặc hai số HHmm.
 
-The cleaned Parquet read-back contains **38 columns**: the 36 BTS fields plus retained `_source_file` and derived `flight_status`. Runtime schema validation passed.
+## 4. Business rules và bảo toàn grain
 
-| Spark type | Columns |
-|---|---|
-| `DateType` | `FL_DATE` |
-| `IntegerType` | `YEAR`, `MONTH`, `DAY_OF_WEEK`, numeric airline/airport IDs, `DEP_DEL15`, `ARR_DEL15`, `CANCELLED`, `DIVERTED` |
-| `DoubleType` | `DEP_DELAY`, `ARR_DELAY`, `ARR_DELAY_NEW`, `DISTANCE`, and five delay-cause columns |
-| `StringType` | Remaining BTS identifiers/names/codes, four HHmm fields, `_source_file`, `flight_status` |
+### 4.1. Phân loại trạng thái
 
-## 5. Required validation
+~~~text
+CANCELLED = 0, DIVERTED = 0  → completed
+CANCELLED = 1, DIVERTED = 0  → cancelled
+CANCELLED = 0, DIVERTED = 1  → diverted
+Mọi tổ hợp còn lại          → invalid
+~~~
 
-The pipeline requires every pre-write check to pass before Parquet is created. In the verified run, all **15/15 pre-write checks passed**:
+`flight_status` giúp downstream dùng một định nghĩa nhất quán. Nếu còn `invalid`, validation thất bại; pipeline không âm thầm chuyển nhóm này thành completed hay loại bỏ.
 
-1. Raw count is nonzero and equals cleaned count.
-2. Counts by `YEAR`/`MONTH` are unchanged.
-3. Raw and cleaned completed/cancelled/diverted/invalid counts match.
-4. Status counts reconcile to cleaned rows, and `invalid = 0`.
-5. Raw counts, month counts, and status counts match the Phase 1 JSON baseline.
-6. Target column names and Spark data types match the contract.
-7. No nonblank value becomes `NULL` because of a failed cast or date parse.
-8. Binary domains and HHmm formats remain valid.
-9. `_source_file` is present and non-null.
-10. At row level, completed flights have `ARR_DEL15` in `{0,1}`, while non-completed flights do not carry an `ARR_DEL15` label.
+### 4.2. Kiểm tra nhãn arrival từng dòng
 
-After the write, Spark reads the Parquet directory again and checks total rows, month counts, status counts, schema, lineage, and the `ARR_DEL15` rules against the pre-write DataFrame. Column order and Parquet nullable metadata are not treated as semantic schema differences because partition discovery can change them; names and Spark data types must match.
+Hợp đồng của dataset hiện tại:
 
-If a mandatory check fails, the report status is `FAIL` and the job exits with an error. The pipeline does not alter data to make checks pass. If write or read-back fails, it does not delete a partial output directory.
+- Completed phải có `ARR_DEL15` bằng 0 hoặc 1.
+- Non-completed phải có `ARR_DEL15 IS NULL`.
+- Giá trị không NULL ngoài 0/1 là vi phạm domain.
 
-### Verified record reconciliation
+Kết quả từng nhóm vi phạm đều bằng 0. Điều này mạnh hơn phép đối chiếu đơn thuần `missing ARR_DEL15 = cancelled + diverted`: hai tổng có thể bằng nhau ngay cả khi một số dòng bị gắn sai nhóm.
 
-| Metric | Raw | Cleaned | Parquet read-back |
-|---|---:|---:|---:|
-| Total records | 1,645,503 | 1,645,503 | 1,645,503 |
-| January 2025 | 539,747 | 539,747 | 539,747 |
-| February 2025 | 504,884 | 504,884 | 504,884 |
-| March 2025 | 600,872 | 600,872 | 600,872 |
+Không suy rộng rule nhãn này thành “mọi actual time của cancelled/diverted đều NULL”; các trường khởi hành/đến có coverage khác nhau.
 
-### Verified flight status and quality checks
+### 4.3. Những thao tác chủ động không làm
 
-| Check | Verified result |
-|---|---:|
-| Completed | 1,611,046 |
-| Cancelled | 30,640 |
-| Diverted | 3,817 |
-| Invalid flight status | 0 |
-| Cleaned schema columns | 38 |
-| Introduced cast `NULL`s | 0 |
-| `ARR_DEL15` row-level violations | 0 |
-| Pre-write checks | 15/15 PASS |
-| Read-back checks | 9/9 PASS |
-| Failed checks | 0 |
-| Errors | 0 |
+- **Không deduplicate:** Phase 1 ghi 0 exact duplicate groups và 0 candidate-key collisions. Không cần xóa dữ liệu; một collision tương lai cũng cần điều tra trước.
+- **Không cap/clip outlier:** giữ `ARR_DELAY = 3.407` phút vì chưa có bằng chứng sai. Giá trị âm được giữ vì biểu thị đến sớm.
+- **Không loại cancelled/diverted:** cần chúng cho cancellation/diversion rates và đối chiếu tổng.
+- **Không imputation:** không có cơ sở nghiệp vụ để điền nhãn, nguyên nhân hay tail number.
+- **Không tạo surrogate key, star schema hoặc features ML:** không cần cho mục tiêu cleaning này.
 
-The three valid flight-status counts reconcile to 1,645,503 records. These results validate the implemented Phase 2 rules and the Parquet round trip; they do not prove the dataset is perfect.
+`clean_flights` chỉ select/transform và bổ sung trạng thái, không filter dòng. Mỗi dòng cleaned tương ứng một dòng raw. `_source_file` giữ tên file nguồn để truy vết; `_source_year` và `_source_month` chỉ dùng nội bộ rồi bỏ khỏi output. Lineage theo file không thay thế khóa duy nhất của một chuyến.
 
-## 6. Validation JSON
+## 5. Vì sao chọn Parquet, Snappy và partition theo tháng?
 
-`artifacts/phase2/validation_summary.json` records the verified run and contains:
+Parquet lưu dữ liệu theo cột và mang schema. Spark SQL có thể đọc các cột cần thiết mà không phải parse lại chuỗi CSV. Snappy là lựa chọn nén của pipeline nhằm cân bằng chi phí nén/giải nén và dung lượng; project **chưa có benchmark** so sánh codecs hoặc chứng minh mức tăng tốc cụ thể.
 
-- `overall_status` and `failure_stage`.
-- Validated input metadata and output configuration.
-- Raw, cleaned, and Phase 1 baseline counts.
-- Month and flight-status reconciliations.
-- Expected/actual type maps and schema mismatches.
-- Per-column source nulls, target nulls, and introduced cast nulls.
-- Binary and HHmm rule counts.
-- Row-level `ARR_DEL15` violation counts and a maximum five-row sample if needed.
-- Parquet write and read-back statuses.
-- Failed check names, errors, and limitations.
+`partitionBy("YEAR", "MONTH")` tạo cấu trúc thư mục theo kỳ báo cáo, phù hợp truy vấn lọc tháng. Spark khôi phục các cột partition khi đọc từ thư mục gốc. Thứ tự cột sau read-back có thể khác vì `YEAR`/`MONTH` được đưa về cuối; schema check so sánh tên và kiểu, không yêu cầu thứ tự hoặc metadata nullable giống hệt.
 
-The verified run reached every stage and finished with `overall_status = PASS`. In a failed future run, stages not reached remain `NOT_RUN`; they are not filled with zero.
+Code dùng `repartition(3, "YEAR", "MONTH")` trước khi ghi để gom dữ liệu theo khóa tháng trong phạm vi MVP nhỏ. Đây là hash partition của Spark, không có nghĩa ba khóa tháng chắc chắn đi vào ba task khác nhau. Không mô tả số task hay số part files quan sát được như benchmark nếu chưa có evidence tương ứng.
 
-## 7. Validation conclusion
+Trade-off: partition quá nhỏ dễ sinh nhiều file nhỏ; partition quá lớn có thể làm đọc dư dữ liệu. Với ba tháng và mục tiêu local, partition tháng rõ ràng hơn việc thêm hãng/sân bay/ngày vào đường dẫn.
 
-Phase 2 reproduced the Phase 1 raw/month/status baseline, preserved all 1,645,503 records through cleaning, and read the same count back from Parquet. The cleaned schema contains 38 columns. All 15 pre-write checks and all 9 read-back checks passed, with zero failed checks and zero recorded errors.
+### An toàn output và tài nguyên
 
-This is technical validation of the implemented cleaning and storage rules. Business KPIs, airline/airport/route comparisons, Spark SQL analytical outputs, Power BI measures, and Machine Learning metrics have not been produced.
+- Writer dùng `errorifexists`; cả output directory và validation JSON hiện có đều bị từ chối ghi đè.
+- Không append âm thầm và không tự xóa thư mục dở dang khi job lỗi.
+- Nếu check thất bại, ghi evidence lỗi khi có thể và raise exception, không sửa dữ liệu để đạt PASS.
+- Raw và cleaned được persist bằng `MEMORY_AND_DISK`, giải phóng khi không còn cần; `spark.stop()` nằm trong `finally`.
+- Thiết lập chạy đã được owner xác nhận: Spark `local[2]`, driver memory 4g trên máy RAM 12 GB; đây là môi trường local, không phải kiến trúc production.
 
-## 8. Windows Parquet smoke test
+## 6. Kiểm chứng trước và sau khi ghi
 
-The project owner ran `scripts/smoke_test_parquet.py` before the full pipeline. It wrote three synthetic rows with explicit types, including HHmm values `0015` and `2400`, read them back, and validated count and types. The result was **PASS with exit code `0`**. The sample is an environment smoke test, not BTS evidence.
+### 6.1. Pre-write: 15/15 checks PASS trong evidence
 
-The successful Windows run used Hadoop 3.3.4 Windows utilities. These local environment binaries are not project source and must not be committed. The script continues to refuse an existing smoke-test path and does not delete its output.
+| Nhóm | Kiểm tra đã triển khai |
+| --- | --- |
+| Bảo toàn population | Raw không rỗng; raw = cleaned; counts theo tháng không đổi; counts trạng thái không đổi. |
+| Trạng thái | Tổng các trạng thái bằng row count; không có invalid. |
+| Hợp đồng dữ liệu | 38 tên/kiểu đúng; không introduced cast NULL hoặc lỗi HHmm; binary domains đúng; HHmm output hợp lệ; lineage hiện diện. |
+| Nhãn | `ARR_DEL15` tuân thủ rule từng dòng. |
+| Baseline Phase 1 | Total, month counts và status counts khớp kết quả profiling đã lưu. |
 
-## 9. Limitations
+### 6.2. Read-back: 9/9 checks PASS trong evidence
 
-- One successful local run verifies Parquet write/read for the stated Windows environment; it is not a production benchmark, SLA, scalability claim, or portability guarantee.
-- PASS covers only the implemented rules, not every possible data-quality issue.
-- Conditional source nulls are intentionally preserved.
-- No duplicate removal, outlier treatment, KPI calculation, Power BI work, feature engineering, or Machine Learning is included.
-- Zero introduced cast nulls does not mean the dataset contains no legitimate conditional nulls.
-- Zero `ARR_DEL15` violations applies only to the implemented row-level rules.
-- Phase 2 is closed, committed and pushed. Phase 3A implementation and runtime validation are complete, pending Git commit; Phase 3B and later phases have not started.
+Sau ghi, script đọc Parquet từ output và so sánh count, tháng, trạng thái với cleaned trước ghi. Đồng thời kiểm tra schema, status reconciliation, nhãn arrival, binary domains, HHmm và lineage.
 
-## 10. Interview practice
+**Giới hạn quan trọng:** Phase 2 không so sánh mọi giá trị của mọi dòng bằng `EXCEPT ALL` hai chiều. Counts bằng nhau không tự chứng minh toàn bộ nội dung giống nhau. Cam kết read-back của phase này là schema, counts và các rules nêu trên. Phase 3A có phép so sánh toàn giá trị cho các bảng aggregate; không gán ngược kiểm chứng đó cho Phase 2.
 
-1. Why are the four HHmm fields stored as strings instead of integers or timestamps?
-2. How does the pipeline safely convert source flags such as `"0.00"` without accepting `"0.50"` as zero?
-3. Why are cancelled and diverted flights retained in the cleaned dataset, and how should downstream KPI denominators treat them?
-4. What are the analytical and performance benefits of Parquet with `YEAR`/`MONTH` partitioning, and what is the small-files trade-off?
-5. Why does the pipeline validate both the pre-write DataFrame and a Parquet read-back instead of treating a successful write call as sufficient evidence?
+### 6.3. Kết quả trực tiếp từ JSON
+
+Nguồn: `artifacts/phase2/validation_summary.json`, `generated_at_utc = 2026-10-10T04:05:06.869839+00:00`.
+
+| Chỉ số | Raw | Cleaned | Parquet read-back |
+| --- | ---: | ---: | ---: |
+| Tổng dòng | 1.645.503 | 1.645.503 | 1.645.503 |
+| Tháng 01 | 539.747 | 539.747 | 539.747 |
+| Tháng 02 | 504.884 | 504.884 | 504.884 |
+| Tháng 03 | 600.872 | 600.872 | 600.872 |
+| Completed | 1.611.046 | 1.611.046 | 1.611.046 |
+| Cancelled | 30.640 | 30.640 | 30.640 |
+| Diverted | 3.817 | 3.817 | 3.817 |
+| Invalid status | 0 | 0 | 0 |
+
+| Kết quả | Giá trị |
+| --- | --- |
+| `overall_status`; pre-write; write; read-back | PASS |
+| Số cột cleaned và read-back | 38 |
+| Introduced cast NULLs | 0 |
+| Vi phạm `ARR_DEL15` từng dòng | 0 ở cả ba loại kiểm tra |
+| Failed checks; errors | Danh sách rỗng |
+| Schema thiếu/thừa cột hoặc sai kiểu | Không phát hiện |
+
+Số lượng 15 và 9 được đếm từ danh sách checks đã lưu, không phải các tests vừa chạy lại.
+
+Owner đã xác nhận Parquet smoke test và full pipeline exit code 0 trên Windows 11, PySpark 3.5.8 sau khi cấu hình Hadoop 3.3.4 Windows utilities. JSON Phase 2 xác nhận write/read-back PASS; không dùng nó để khẳng định đã tự kiểm tra phiên bản binary hệ điều hành. Không cần commit Hadoop binaries vào repository.
+
+[smoke_test_parquet.py](../scripts/smoke_test_parquet.py) dùng ba dòng mẫu với `"0015"`, `"2400"` và NULL để kiểm tra ghi/đọc string và partition. Đây là kiểm thử dữ liệu tổng hợp đã được owner chạy, không phải thống kê ba dòng đại diện toàn BTS.
+
+## 7. Cleaning khác ML preprocessing như thế nào?
+
+| Phase 2 đã triển khai | Phase 5 chưa triển khai |
+| --- | --- |
+| Chuẩn hóa kiểu, blank/NULL; xác định trạng thái; bảo toàn bản ghi và lineage | Chọn target population, prediction time và features không leakage |
+| Ghi dữ liệu phân tích có schema nhất quán | Chia train/test theo chiến lược phù hợp |
+| Giữ các giá trị nghiệp vụ, không tùy tiện điền missing | Encoding categorical và các transformation cần fit chỉ trên training data |
+| Kiểm chứng hợp đồng dữ liệu và Parquet | Đánh giá mô hình bằng kết quả thực nghiệm chưa có |
+
+Một scaler/encoder fit trên cả dataset có thể rò rỉ thông tin từ test vào train. Không cần đưa các bước đó vào cleaning để làm pipeline “đầy đủ hơn”.
+
+## 8. Ý nghĩa và giới hạn
+
+Phase 2 đã hoàn thành implementation và runtime validation; code/documentation đã được owner xác nhận push ở các commit `6c50b00` và `4a9e907`. Đây là thông tin lịch sử đã cung cấp, không phải Git vừa được thực thi để xác minh lại.
+
+Các checks PASS cho phép dùng cleaned dataset làm đầu vào analytics với các hợp đồng đã định nghĩa. Chúng không chứng minh nguồn hoàn hảo, không xác minh mọi outlier và không cung cấp business KPI hay ML performance.
+
+Dashboard ba trang hiện đã được xây dựng ở giai đoạn sau. Câu “Phase 2 không tạo Power BI hoặc ML output” chỉ giới hạn trách nhiệm pipeline này, không mô tả dashboard hiện tại là chưa bắt đầu.
+
+## 9. Câu hỏi phỏng vấn gắn với cleaning
+
+- **Vì sao không cast flag trực tiếp sang integer?** Cần chấp nhận biểu diễn `0.00/1.00` nhưng từ chối giá trị ngoài domain, không để phép cắt phần lẻ che lỗi.
+- **Vì sao cần read-back khi write không báo lỗi?** Ghi thành công chưa chứng minh schema/counts/rules của dữ liệu đọc lại đúng.
+- **Partition theo tháng có luôn tối ưu không?** Không; phù hợp grain truy vấn và phạm vi hiện tại, nhưng chưa có benchmark và cần xem lại khi quy mô thay đổi.
+
+## Những điểm cần ghi nhớ
+
+- Cleaning chuẩn hóa biểu diễn, không thay đổi population hoặc tự viết lại kết quả vận hành.
+- NULL có điều kiện được giữ; 0 introduced NULL không có nghĩa dataset không có NULL.
+- Raw, cleaned và read-back đều có 1.645.503 dòng; cleaned có 38 cột.
+- Parquet Snappy theo YEAR/MONTH đã ghi/đọc thành công; không overwrite output.
+- Phase 2 kiểm chứng hợp đồng hữu hạn và chưa thực hiện ML preprocessing.

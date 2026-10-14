@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,16 +11,28 @@ from typing import Any
 
 from pyspark import StorageLevel
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
-from airline_analytics.cleaning import CLEANED_COLUMNS, clean_flights
+from airline_analytics.cleaning import (
+    CLEANED_COLUMNS, ESSENTIAL_ARRIVAL_COLUMNS, RAW_LINEAGE_COLUMNS,
+    classify_arrival_records, clean_flights, split_arrival_records,
+)
 from airline_analytics.ingestion import load_raw_csvs, validate_input_files
-from airline_analytics.schema import EXPECTED_FILE_METADATA
+from airline_analytics.schema import (
+    DATASET_SCOPE, EXPECTED_COLUMNS, EXPECTED_FILE_METADATA, EXPECTED_MONTHS, EXPECTED_YEAR,
+)
 from airline_analytics.validation import (
     collect_arr_del15_violation_samples,
     collect_cleaned_summary,
     collect_raw_summary,
     collect_transformation_issues,
     compare_cleaned_schema,
+    compare_rejected_schema,
+    collect_arrival_missingness,
+    collect_partition_counts,
+    reconcile_partition_counts,
+    same_dataframe_values,
+    validate_rejected_diagnostic,
 )
 
 
@@ -34,27 +47,88 @@ def parse_args() -> argparse.Namespace:
         "--input-dir",
         type=Path,
         default=Path("data/raw"),
-        help="Directory containing the three verified BTS CSV files.",
+        help="Directory containing the twelve verified BTS CSV files.",
     )
     parser.add_argument(
         "--phase1-profile",
         type=Path,
-        default=Path("artifacts/phase1/profile_summary.json"),
+        default=Path("artifacts/phase1_2025/profile_summary.json"),
         help="Verified Phase 1 JSON used as the count baseline.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/processed/flights_cleaned"),
+        default=Path("data/processed/flights_cleaned_2025_reviewed"),
         help="New Parquet directory. The script refuses an existing path.",
     )
     parser.add_argument(
         "--validation-output",
         type=Path,
-        default=Path("artifacts/phase2/validation_summary.json"),
+        default=Path("artifacts/phase2_2025_reviewed/validation_summary.json"),
         help="New JSON report path. The script refuses to overwrite it.",
     )
+    parser.add_argument("--rejected-output", type=Path,
+                        default=Path("artifacts/phase2_2025_reviewed/rejected_records"))
+    parser.add_argument("--approved-diagnostic", type=Path, required=True,
+                        help="Explicitly select the owner-reviewed missing-arrival diagnostic.")
+    parser.add_argument("--mvp-input-dir", type=Path,
+                        default=Path("data/processed/flights_cleaned"),
+                        help="Read-only January-March Parquet for regression comparison.")
     return parser.parse_args()
+
+
+def check_paths(args: argparse.Namespace) -> None:
+    """Never write inside a source, evidence, MVP or another output path."""
+    inputs = [args.input_dir, args.phase1_profile, args.approved_diagnostic, args.mvp_input_dir]
+    outputs = [args.output_dir, args.rejected_output, args.validation_output]
+    resolved = [path.resolve() for path in (*inputs, *outputs)]
+    for index, left in enumerate(resolved):
+        for right in resolved[index + 1:]:
+            if left.is_relative_to(right) or right.is_relative_to(left):
+                raise ValueError(f"Paths must not overlap: {left}, {right}")
+    for path in outputs:
+        if path.exists():
+            raise FileExistsError(f"Refusing existing output: {path}")
+    if not args.mvp_input_dir.is_dir():
+        raise FileNotFoundError(f"MVP Parquet required for regression check: {args.mvp_input_dir}")
+
+
+def load_approved_diagnostic(path: Path, validated_files: list[dict]) -> dict:
+    """Approval is supplied through the CLI; historical evidence stays unchanged."""
+    content = path.read_bytes()
+    diagnostic = json.loads(content.decode("utf-8-sig"))
+    rows = diagnostic.get("raw_rows", [])
+    count = diagnostic.get("affected_rows")
+    if (not isinstance(count, int) or count < 0
+            or diagnostic.get("rows_truncated") is not False
+            or diagnostic.get("exported_rows") != count or len(rows) != count):
+        raise ValueError("Diagnostic must contain every reviewed rejected record.")
+    columns = (*EXPECTED_COLUMNS, *RAW_LINEAGE_COLUMNS)
+    for row in rows:
+        if not all(column in row for column in columns):
+            raise ValueError("Diagnostic row lacks source columns or lineage.")
+        if not any(row[c] is None or str(row[c]).strip() == ""
+                   for c in ESSENTIAL_ARRIVAL_COLUMNS):
+            raise ValueError("Diagnostic contains a row without essential arrival missingness.")
+        if float(row["CANCELLED"]) != 0 or float(row["DIVERTED"]) != 0:
+            raise ValueError("Reviewed rejected records must be completed flights.")
+    expected_counts = {
+        c: sum(row[c] is None or str(row[c]).strip() == "" for row in rows)
+        for c in ESSENTIAL_ARRIVAL_COLUMNS
+    }
+    if diagnostic.get("completed_missing_counts") != expected_counts:
+        raise ValueError("Diagnostic missing counts disagree with exported rows.")
+    if sorted(diagnostic["input_files"], key=lambda r: r["file_name"]) != sorted(
+        validated_files, key=lambda r: r["file_name"]
+    ):
+        raise ValueError("Diagnostic file hashes/metadata do not match current validated input.")
+    diagnostic["approval_provenance"] = {
+        "path": path.resolve().as_posix(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "approval": "Owner-selected diagnostic via --approved-diagnostic",
+        "expected_rejected_rows": count,
+    }
+    return diagnostic
 
 
 def create_spark_session() -> SparkSession:
@@ -94,6 +168,20 @@ def load_phase1_baseline(path: Path) -> dict[str, Any]:
         profile = json.load(profile_file)
 
     file_counts = profile["row_counts"]["by_file"]
+    expected_period = {"year": EXPECTED_YEAR, "months": list(EXPECTED_MONTHS)}
+    if profile.get("configured_period") != expected_period:
+        raise ValueError("Phase 1 baseline must cover the configured full year")
+    coverage = profile.get("coverage_checks", {})
+    required_coverage = (
+        "all_configured_files_have_rows", "all_configured_periods_present",
+        "status_reconciles",
+    )
+    if not all(coverage.get(name) is True for name in required_coverage):
+        raise ValueError("Phase 1 coverage checks must pass before cleaning")
+    if {(item["source_year"], item["source_month"]) for item in file_counts} != {
+        (EXPECTED_YEAR, month) for month in EXPECTED_MONTHS
+    }:
+        raise ValueError("Phase 1 monthly counts do not cover the configured year")
     status = profile["flight_status"]
     invalid_count = int(status.get("invalid_both_flags", 0)) + int(
         status.get("invalid_or_missing_flags", 0)
@@ -126,15 +214,38 @@ def build_pre_write_validation(
     raw_df: DataFrame,
     cleaned_df: DataFrame,
     phase1_baseline: dict[str, Any],
+    rejected_df: DataFrame,
+    diagnostic: dict,
+    mvp_df: DataFrame,
 ) -> dict[str, Any]:
     """Run all mandatory checks before any Parquet write occurs."""
     raw = collect_raw_summary(raw_df)
     cleaned = collect_cleaned_summary(cleaned_df)
     transformations = collect_transformation_issues(raw_df)
     schema = compare_cleaned_schema(cleaned_df)
+    rejected = collect_raw_summary(rejected_df)
+    combined_months = _month_count_map(cleaned["by_month"] + rejected["by_month"])
+    combined_status = {
+        status: cleaned["flight_status"][status] + rejected["flight_status"][status]
+        for status in raw["flight_status"]
+    }
+    partitions = {
+        "raw": collect_partition_counts(raw_df, raw=True),
+        "cleaned": collect_partition_counts(cleaned_df, raw=False),
+        "rejected": collect_partition_counts(rejected_df, raw=True),
+    }
+    missing_before = collect_arrival_missingness(clean_flights(raw_df))
+    missing_after = collect_arrival_missingness(cleaned_df)
+    diagnostic_check = validate_rejected_diagnostic(rejected_df, diagnostic)
+    rejected_schema = compare_rejected_schema(rejected_df)
+    mvp_schema = compare_cleaned_schema(mvp_df)
+    mvp_period = (F.col("YEAR") == 2025) & F.col("MONTH").isin(1, 2, 3)
+    # These are historical MVP periods, not a per-flight cleaning exception.
+    mvp_matches = mvp_schema["pass"] and same_dataframe_values(
+        cleaned_df.filter(mvp_period), mvp_df
+    )
 
     raw_months = _month_count_map(raw["by_month"])
-    cleaned_months = _month_count_map(cleaned["by_month"])
     baseline_months = _month_count_map(phase1_baseline["by_month"])
     output_binary_invalid = sum(cleaned["binary_invalid_counts"].values())
     output_hhmm_invalid = sum(cleaned["hhmm_invalid_counts"].values())
@@ -142,21 +253,22 @@ def build_pre_write_validation(
     checks = [
         _check("raw_dataset_is_not_empty", raw["total_rows"] > 0, raw["total_rows"]),
         _check(
-            "raw_count_equals_cleaned_count",
-            raw["total_rows"] == cleaned["total_rows"],
-            {"raw": raw["total_rows"], "cleaned": cleaned["total_rows"]},
+            "raw_count_equals_cleaned_plus_rejected",
+            raw["total_rows"] == cleaned["total_rows"] + rejected["total_rows"],
+            {"raw": raw["total_rows"], "cleaned": cleaned["total_rows"],
+             "rejected": rejected["total_rows"]},
         ),
         _check(
-            "month_counts_unchanged",
-            raw_months == cleaned_months,
-            {"raw": raw_months, "cleaned": cleaned_months},
+            "month_counts_reconcile",
+            raw_months == combined_months,
+            {"raw": raw_months, "cleaned_plus_rejected": combined_months},
         ),
         _check(
-            "status_counts_unchanged",
-            raw["flight_status"] == cleaned["flight_status"],
+            "status_counts_reconcile",
+            raw["flight_status"] == combined_status,
             {
                 "raw": raw["flight_status"],
-                "cleaned": cleaned["flight_status"],
+                "cleaned_plus_rejected": combined_status,
             },
         ),
         _check(
@@ -219,6 +331,26 @@ def build_pre_write_validation(
                 "phase1": phase1_baseline["flight_status"],
             },
         ),
+        _check("no_invalid_raw_status", raw["flight_status"]["invalid"] == 0,
+               raw["flight_status"]),
+        _check("file_month_status_conservation", reconcile_partition_counts(
+            partitions["raw"], partitions["cleaned"], partitions["rejected"]
+        ), partitions),
+        _check("rejected_matches_approved_diagnostic", diagnostic_check["pass"], diagnostic_check),
+        _check("rejected_schema_contract", rejected_schema["pass"], rejected_schema),
+        _check("rejected_only_completed", rejected["total_rows"]
+               == rejected["flight_status"]["completed"], rejected["flight_status"]),
+        _check("missing_essential_count_matches_rejected", missing_before["totals"][
+            "completed_missing_essential_arrival"] == rejected["total_rows"],
+            {"missing": missing_before["totals"]["completed_missing_essential_arrival"],
+             "rejected": rejected["total_rows"]}),
+        _check("cleaned_has_essential_arrival", missing_after["totals"][
+            "completed_missing_essential_arrival"] == 0, missing_after),
+        _check("mvp_schema_and_all_values_unchanged", mvp_matches, mvp_schema),
+        _check("mvp_has_no_rejected_records", all(
+            r["row_count"] == 0 for r in rejected["by_month"]
+            if r["year"] == 2025 and r["month"] in (1, 2, 3)
+        ), rejected["by_month"]),
     ]
 
     violation_samples: list[dict[str, Any]] = []
@@ -230,6 +362,13 @@ def build_pre_write_validation(
         "status": "PASS" if passed else "FAIL",
         "raw": raw,
         "cleaned": cleaned,
+        "rejected": rejected,
+        "partition_counts": partitions,
+        "arrival_missingness_before": missing_before,
+        "arrival_missingness_cleaned": missing_after,
+        "diagnostic_approval": diagnostic["approval_provenance"],
+        "warnings": (["Completed flights missing only ARR_DELAY_NEW retained; owner review required."]
+                     if missing_after["totals"]["completed_only_missing_arr_delay_new"] else []),
         "phase1_baseline": phase1_baseline,
         "schema": schema,
         "cast_and_null_checks": transformations,
@@ -245,6 +384,10 @@ def build_read_back_validation(
     pre_write_cleaned: dict[str, Any],
     read_back_df: DataFrame,
     schema: dict[str, Any],
+    pre_write: dict[str, Any],
+    rejected_df: DataFrame,
+    rejected_read_back: DataFrame,
+    mvp_df: DataFrame,
 ) -> dict[str, Any]:
     """Compare Parquet read-back metrics with the pre-write DataFrame."""
     read_back = collect_cleaned_summary(read_back_df)
@@ -252,7 +395,32 @@ def build_read_back_validation(
     read_back_months = _month_count_map(read_back["by_month"])
     read_back_binary_invalid = sum(read_back["binary_invalid_counts"].values())
     read_back_hhmm_invalid = sum(read_back["hhmm_invalid_counts"].values())
+    missing = collect_arrival_missingness(read_back_df)
+    rejected_schema = compare_rejected_schema(rejected_read_back)
+    rejected_summary = collect_raw_summary(rejected_read_back)
+    partitions = {
+        "cleaned": collect_partition_counts(read_back_df, raw=False),
+        "rejected": collect_partition_counts(rejected_read_back, raw=True),
+    }
     checks = [
+        _check("read_back_missingness_unchanged", missing == pre_write["arrival_missingness_cleaned"], missing),
+        _check("read_back_essential_arrival_present", missing["totals"][
+            "completed_missing_essential_arrival"] == 0, missing),
+        _check("read_back_rejected_schema", rejected_schema["pass"], rejected_schema),
+        _check("read_back_rejected_counts", rejected_summary == pre_write["rejected"], rejected_summary),
+        _check("read_back_rejected_all_values", same_dataframe_values(
+            rejected_df, rejected_read_back), "Bidirectional EXCEPT ALL, including rejection metadata"),
+        _check("read_back_partition_counts_unchanged", all(
+            partitions[name] == pre_write["partition_counts"][name]
+            for name in ("cleaned", "rejected")
+        ), partitions),
+        _check("read_back_raw_equals_accepted_plus_rejected", reconcile_partition_counts(
+            pre_write["partition_counts"]["raw"], partitions["cleaned"], partitions["rejected"]
+        ), None),
+        _check("read_back_mvp_all_values_unchanged", same_dataframe_values(
+            read_back_df.filter((F.col("YEAR") == 2025) & F.col("MONTH").isin(1, 2, 3)),
+            mvp_df,
+        ), "January-March full 38-column multiset versus preserved MVP"),
         _check(
             "read_back_count_matches_pre_write",
             read_back["total_rows"] == pre_write_cleaned["total_rows"],
@@ -309,6 +477,8 @@ def build_read_back_validation(
     return {
         "status": "PASS" if passed else "FAIL",
         "summary": read_back,
+        "rejected_summary": rejected_summary,
+        "arrival_missingness": missing,
         "schema": schema,
         "checks": checks,
         "failed_checks": [
@@ -318,7 +488,7 @@ def build_read_back_validation(
 
 
 def write_cleaned_parquet(cleaned_df: DataFrame, output_dir: Path) -> None:
-    """Write three-month MVP data with one hash partition per month key."""
+    """Hash-partition by month without changing the existing write strategy."""
     if output_dir.exists():
         raise FileExistsError(f"Output directory already exists: {output_dir}")
     (
@@ -333,7 +503,7 @@ def write_cleaned_parquet(cleaned_df: DataFrame, output_dir: Path) -> None:
 def _initial_report(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "phase": 2,
-        "scope": "BTS Reporting Carrier On-Time Performance, 2025-01 to 2025-03",
+        "scope": DATASET_SCOPE,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "overall_status": "RUNNING",
         "failure_stage": None,
@@ -348,6 +518,18 @@ def _initial_report(args: argparse.Namespace) -> dict[str, Any]:
             "compression": "snappy",
             "partition_columns": ["YEAR", "MONTH"],
             "shuffle_partitions_for_write": OUTPUT_PARTITIONS,
+        },
+        "rejected_output": {
+            "path": args.rejected_output.as_posix(), "format": "parquet",
+            "compression": "snappy", "partition_columns": [],
+            "source_values": "Original strings/nulls as parsed by existing CSV reader",
+        },
+        "cleaning_policy": {
+            "name": "completed_missing_essential_arrival_rejected",
+            "essential_fields": list(ESSENTIAL_ARRIVAL_COLUMNS),
+            "arr_delay_new": "Report only; preserve without imputation",
+            "approved_diagnostic": args.approved_diagnostic.resolve().as_posix(),
+            "mvp_reference": args.mvp_input_dir.resolve().as_posix(),
         },
         "pre_write": {"status": "NOT_RUN"},
         "write": {"status": "NOT_RUN"},
@@ -376,6 +558,10 @@ def print_summary(report: dict[str, Any], report_path: Path) -> None:
         cleaned = report["pre_write"]["cleaned"]
         print(f"Cleaned rows: {cleaned['total_rows']:,}")
         print(f"Flight status: {cleaned['flight_status']}")
+        print(f"Rejected rows: {report['pre_write']['rejected']['total_rows']:,}")
+        print(f"Arrival missingness: {report['pre_write']['arrival_missingness_cleaned']['totals']}")
+        for warning in report["pre_write"].get("warnings", []):
+            print(f"WARNING: {warning}")
     print(f"Parquet write: {report['write']['status']}")
     print(f"Parquet read-back: {report['read_back']['status']}")
     print(f"Validation report: {report_path.resolve()}")
@@ -383,15 +569,13 @@ def print_summary(report: dict[str, Any], report_path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.validation_output.exists():
-        raise FileExistsError(
-            f"Validation report already exists: {args.validation_output}"
-        )
+    check_paths(args)
 
     report = _initial_report(args)
     spark: SparkSession | None = None
     raw_df: DataFrame | None = None
     cleaned_df: DataFrame | None = None
+    rejected_df: DataFrame | None = None
     current_stage = "preflight"
 
     try:
@@ -405,6 +589,9 @@ def main() -> None:
             args.input_dir / file_name for file_name in EXPECTED_FILE_METADATA
         ]
         report["input"]["validated_files"] = validate_input_files(input_paths)
+        diagnostic = load_approved_diagnostic(
+            args.approved_diagnostic, report["input"]["validated_files"]
+        )
 
         current_stage = "pre_write"
         report["pre_write"] = {"status": "RUNNING"}
@@ -412,9 +599,13 @@ def main() -> None:
         raw_df = load_raw_csvs(spark, input_paths).persist(
             StorageLevel.MEMORY_AND_DISK
         )
-        cleaned_df = clean_flights(raw_df).persist(StorageLevel.MEMORY_AND_DISK)
+        classified = classify_arrival_records(raw_df)
+        accepted_raw, rejected_df = split_arrival_records(classified)
+        rejected_df.persist(StorageLevel.MEMORY_AND_DISK)
+        cleaned_df = clean_flights(accepted_raw).persist(StorageLevel.MEMORY_AND_DISK)
+        mvp_df = spark.read.parquet(args.mvp_input_dir.resolve().as_posix())
         report["pre_write"] = build_pre_write_validation(
-            raw_df, cleaned_df, phase1_baseline
+            raw_df, cleaned_df, phase1_baseline, rejected_df, diagnostic, mvp_df
         )
         if report["pre_write"]["status"] != "PASS":
             raise RuntimeError(
@@ -427,8 +618,13 @@ def main() -> None:
 
         current_stage = "write"
         report["write"] = {"status": "RUNNING"}
+        # Save rejection evidence first. Partial outputs are NEVER auto-deleted.
+        rejected_df.coalesce(1).write.mode("errorifexists").option(
+            "compression", "snappy"
+        ).parquet(args.rejected_output.resolve().as_posix())
+        report["write"]["rejected_status"] = "PASS"
         write_cleaned_parquet(cleaned_df, args.output_dir)
-        report["write"] = {"status": "PASS"}
+        report["write"] = {"status": "PASS", "rejected_status": "PASS", "accepted_status": "PASS"}
 
         cleaned_df.unpersist()
         cleaned_df = None
@@ -447,10 +643,15 @@ def main() -> None:
             raise RuntimeError("Parquet read-back schema validation failed")
 
         read_back_df = loaded_parquet.select(*CLEANED_COLUMNS)
+        rejected_read_back = spark.read.parquet(args.rejected_output.resolve().as_posix())
         report["read_back"] = build_read_back_validation(
             report["pre_write"]["cleaned"],
             read_back_df,
             read_back_schema,
+            report["pre_write"],
+            rejected_df,
+            rejected_read_back,
+            mvp_df,
         )
         if report["read_back"]["status"] != "PASS":
             raise RuntimeError(
@@ -475,6 +676,8 @@ def main() -> None:
         print_summary(report, args.validation_output)
         raise
     finally:
+        if rejected_df is not None:
+            rejected_df.unpersist()
         if cleaned_df is not None:
             cleaned_df.unpersist()
         if raw_df is not None:

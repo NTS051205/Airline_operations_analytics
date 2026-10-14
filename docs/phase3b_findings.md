@@ -1,357 +1,306 @@
-# Phase 3B — Additional Business Analytics
-
-**Status: Implementation and runtime validation completed; pending Git commit.**
-The owner completed the pipeline with exit code 0. The actual validation JSON and
-all three generated CSV outputs were read to finalize this report; no job was rerun.
-
-Phase 3A is complete and was pushed to `main` at `5aa27ea`, as confirmed by the
-owner. Its four analytical Parquet tables and its code are not changed or rebuilt.
-Power BI and Machine Learning have not started.
-
-## 1. Scope, files and data flow
-
-Input: `data/processed/flights_cleaned/`, the existing January–March 2025 cleaned
-Parquet dataset. Prior phases verified 1,645,503 records: 1,611,046 completed,
-30,640 cancelled and 3,817 diverted. Phase 3B independently recorded 1,645,503 input
-rows and monthly total/completed/delayed counts (section 7). Cancelled/diverted
-counts above remain prior-phase evidence, not separate Phase 3B JSON measurements.
-The runner uses actual source monthly counts as reconciliation references.
-
-Exactly three analyses were executed and validated:
-
-| File | Responsibility | Output grain |
-|---|---|---|
-| `sql/analytics/008_day_of_week.sql` | Observed arrival delay rate by BTS weekday | YEAR, MONTH, DAY_OF_WEEK |
-| `sql/analytics/009_departure_time_band.sql` | Observed arrival delay rate by scheduled departure band | YEAR, MONTH, time_band |
-| `sql/analytics/010_delay_causes.sql` | Shares of reported attributed delay minutes | YEAR, MONTH, cause_category |
-| `scripts/run_phase3b.py` | Read Parquet, run SQL, validate, export/read CSV, record JSON | Orchestration only |
-| `docs/phase3b_findings.md` | Definitions, limitations, execution handoff and findings | Documentation |
-
-The runner registers `flights_cleaned` as a temporary Spark SQL view. Only the 11
-required input columns are cached with memory-and-disk fallback. It does not read
-raw CSV or Phase 3A outputs and never writes into `data/analytics/`.
-
-Verified user-run artifacts:
-
-```text
-artifacts/phase3b/
-  day_of_week/                 # header + one CSV data part file; Spark metadata
-  departure_time_band/         # header + one CSV data part file; Spark metadata
-  delay_causes/                # header + one CSV data part file; Spark metadata
-  validation_summary.json
-```
-
-Each CSV output is a Spark directory, not a file named after the directory. NULL
-is serialized as the literal `NULL` and read back with the same setting. Aggregated
-results contain 21 weekday, 12 time-band and 15 cause rows in this run.
-Collecting these bounded aggregates for validation/preview does not collect the
-flight-level dataset. There is no `toPandas()` call.
-
-## 2. Day-of-Week Performance
-
-**Business question:** Which weekdays show higher observed arrival delay rates?
-
-SQL groups directly by YEAR, MONTH and the existing DAY_OF_WEEK. BTS coding is
-retained: 1 Monday, 2 Tuesday, 3 Wednesday, 4 Thursday, 5 Friday, 6 Saturday,
-7 Sunday. The runner rejects NULL/out-of-domain weekday values before exporting;
-it does not silently filter flights or recalculate weekday from timestamps.
-
-Verified output schema (7 columns):
-
-- `YEAR`, `MONTH`, `DAY_OF_WEEK`: int, forming the unique grain.
-- `total_flights`, `completed_flights`, `delayed_arrival_flights`: bigint counts.
-- `arrival_delay_rate`: double, delayed completed flights / completed flights.
-
-All flight statuses contribute to total flights. Only `flight_status='completed'`
-contributes to completed flights, and only completed with `ARR_DEL15=1` contributes
-to delayed arrivals. `NULLIF(completed_flights, 0)` gives NULL when the rate is
-undefined. A day with more delayed flights can still have a lower delay rate if
-it has more completed flights. Compare rates together with their denominators.
-
-Counts across weekday groups must reproduce the source total/completed/delayed
-counts in each month. The check preserves the source weekday coding; it does not
-claim an independent re-audit of its agreement with FL_DATE, which was outside
-this supplementary analysis.
-
-## 3. Scheduled Departure Time Bands
-
-**Business question:** Does observed arrival delay rate differ across scheduled
-departure time bands?
-
-Use `CRS_DEP_TIME`, the scheduled local departure HHmm string. Actual `DEP_TIME`
-is not used. No source field is changed or converted to an integer.
-
-| Band | Valid scheduled times |
-|---|---|
-| Night | 0000–0559; also the exact BTS value 2400 |
-| Morning | 0600–1159 |
-| Afternoon | 1200–1759 |
-| Evening | 1800–2359 |
-| Missing | CRS_DEP_TIME is NULL |
-| Invalid | Non-NULL values that are neither a valid four-digit HHmm nor 2400 |
-
-The SQL validates all four characters before comparing HHmm strings. This retains
-leading zeros and prevents malformed values from entering a normal band. `2400`
-is treated as midnight for grouping only: it stays in the original YEAR/MONTH,
-without inventing a new date or timestamp. Blank strings are Invalid if present;
-the already-cleaned input normally represents blanks as NULL.
-
-Verified output schema (8 columns): `YEAR`, `MONTH` (int); `time_band` (string); the same
-three bigint flight counts and double rate as the weekday output; plus bigint
-`scheduled_2400_flights` as a diagnostic. That count may be nonzero only in Night.
-
-Missing and Invalid groups are retained whenever observed. They contribute to
-monthly reconciliation and have the same status-specific numerator/denominator
-rules. No zero-filled groups are manufactured for bands absent from a month.
-
-Interpret differences as observed associations, not proof that the scheduled time
-causes delay. Times are local to origin airports, not a common UTC time zone;
-carrier, route and airport composition can differ between bands. A small band
-requires volume caution, even if its observed rate is high.
-
-## 4. Delay Cause Breakdown
-
-**Business question:** Among completed flights labeled ARR_DEL15=1, which BTS
-reporting categories account for the largest shares of attributed delay minutes?
-
-The eligible CTE filters to exactly that population. `STACK` expands each eligible
-flight into five category rows, retaining NULL values. Categories use the source
-names CARRIER_DELAY, WEATHER_DELAY, NAS_DELAY, SECURITY_DELAY and
-LATE_AIRCRAFT_DELAY. Grouped SUM/COUNT produce category minutes and coverage.
-A window SUM over YEAR/MONTH supplies the common monthly denominator.
-
-Verified output schema (10 columns):
-
-| Column | Spark type | Meaning |
-|---|---|---|
-| YEAR, MONTH | int | Source flight month |
-| cause_category | string | One of the five BTS source cause columns |
-| eligible_delayed_flights | bigint | Completed ARR_DEL15=1 flights in this month |
-| reported_cause_flights | bigint | Eligible flights with a non-NULL value for this category, including reported zero |
-| flights_with_any_reported_cause | bigint | Eligible flights with at least one non-NULL cause field |
-| flights_with_all_reported_causes | bigint | Eligible flights with all five cause fields non-NULL |
-| attributed_minutes | double | SUM of the reported minutes in this category; numerator |
-| monthly_attributed_minutes | double | SUM of all five category totals in this month; denominator |
-| cause_minute_share | double | Numerator / NULLIF(denominator, 0); fraction from 0 to 1 |
-
-The three month-level coverage counts and the monthly denominator repeat on each
-category row. Do not add them across the five rows: one flight can contribute to
-multiple reporting categories. `reported_cause_flights / eligible_delayed_flights`
-describes reporting coverage, not the fraction of flights delayed due to that cause.
-A reported zero counts as available reporting but adds no minutes.
-
-NULL is never imputed to zero. SUM ignores individual NULLs; a category with no
-reported values has NULL numerator, zero reported count and NULL share. A category
-with reported zero-minute values can have a zero numerator, distinguishable by its
-positive reported count. If all category totals are NULL, the monthly denominator
-is NULL. If reported totals sum to zero, it is zero. Shares remain NULL in either
-case. For a positive denominator, the available category shares sum to about 1
-(100%); this alone does not demonstrate complete reporting coverage.
-
-For a month with eligible flights, all five category rows are retained even when
-some causes are unreported. A month with no eligible flights produces no cause
-rows. Numerators and denominators describe attributed minutes only. They are not
-compared or forced to equal signed ARR_DELAY, which is not read by this analysis.
-No causal inference beyond the BTS reporting categories is claimed.
-
-## 5. Focused validation and failure behavior
-
-The runner checks actual execution results for:
-
-1. Required input names/types, nonempty input and the January–March 2025 period.
-   Weekday domain, flight status and conditional ARR_DEL15 labels must be valid.
-2. Reported cause values must be finite and nonnegative; NULL is permitted. Input
-   cause sums are also checked for finite results before they enter the report.
-3. Unique output grains, valid group labels, nonnegative ordered flight counts,
-   rate formulas/bounds and NULL rates for zero completed-flight denominators.
-4. Monthly total/completed/delayed count reconciliation for weekday and time band.
-   Separate source boundary counts check each normal time band's total, plus
-   Missing/Invalid counts and the count/location of literal 2400.
-5. Exact five-category coverage where eligible flights exist, coverage counts and
-   category sums reconciled to independent source aggregates, shared denominator
-   correctness and shares summing to approximately 1 only with positive minutes.
-6. CSV write followed by typed read-back with header checking and FAILFAST parsing;
-   both row count and all row values/multiplicities must match the small SQL result.
-
-CSV has no stored type metadata. Read-back uses the SQL result schema explicitly;
-it tests parsing and value preservation, not automatic inference of CSV types.
-Counts compare exactly. Floating-point comparisons use relative tolerance 1E-12
-and absolute tolerance 1E-9. This is numerical tolerance, not rounding in the SQL.
-
-`validation_summary.json` records overall status, failure stage, runtime, source
-monthly counts/quality diagnostics, per-analysis schema/row counts/CSV paths,
-individual checks, failed check names and errors. Source cause reporting coverage
-and sums are recorded alongside monthly counts. Verified results are in section 7.
-Only successful execution and checks allow a PASS status. Unreached analyses stay
-NOT_RUN. A failed check raises an exception and the process exits nonzero.
-
-The output directory must be a new directory below this repository's `artifacts/`;
-it cannot overlap input. Existing directories are refused even if empty. An early
-path refusal creates no new report. Once a run reserves its output directory,
-runtime failure preserves partial CSVs and records failure evidence where writable.
-The runner performs no automatic deletion, append or overwrite. This successful
-local run covers the implemented checks only, not perfect data or production performance.
-
-## 6. Owner-run PowerShell commands — retained for reproducibility
-
-The owner has completed execution. The commands below document the workflow,
-not a request to rerun it. Keep the existing Python 3.11.9, PySpark 3.5.8,
-Java 17 and working Windows Hadoop utilities. Codex has not run these commands.
-
-```powershell
-Set-Location "E:\airline_operations_analytics"
-
-$projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
-$sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
-$env:PYSPARK_PYTHON = $projectPython
-$env:PYSPARK_DRIVER_PYTHON = $projectPython
-
-& $projectPython --version
-java -version
-& $projectPython -c "import pyspark; print(pyspark.__version__)"
-Test-Path ".\data\processed\flights_cleaned"
-Test-Path ".\artifacts\phase3b"
-
-& $sparkSubmit `
-    --master "local[2]" `
-    --driver-memory "4g" `
-    ".\scripts\run_phase3b.py" `
-    --input-dir ".\data\processed\flights_cleaned" `
-    --output-dir ".\artifacts\phase3b"
-
-$phase3bExitCode = $LASTEXITCODE
-Write-Host "Phase 3B exit code: $phase3bExitCode"
-Get-Content ".\artifacts\phase3b\validation_summary.json" -Raw
-Get-ChildItem ".\artifacts\phase3b" -Recurse -Filter "*.csv"
-```
-
-The cleaned input and `artifacts/phase3b` now exist. An identical rerun is refused
-to protect the verified results. Any owner-authorized future rerun needs a fresh
-directory such as `artifacts/phase3b_retry01`; there is no automatic deletion.
-Both PYSPARK variables point at `.venv` Python for driver/worker consistency.
-
-## 7. Verified runtime results and business findings
-
-### Runtime and validation
-
-Evidence: `artifacts/phase3b/validation_summary.json`, generated at
-`2026-10-10T06:38:06.713552+00:00`, and the CSV data part files in its three
-output directories. Counts, minutes and unrounded row rates/shares below come
-directly from JSON/CSV. Percent displays multiply stored fractions by 100 and
-round to two decimals. Totals/coverage percentages explicitly marked derived
-are arithmetic from those records, not additional Spark checks.
-
-| Runtime / validation | Verified result |
-|---|---|
-| Pipeline exit code | 0 (owner-confirmed; not a JSON field) |
-| Overall / input status | PASS / PASS |
-| Spark / master | 3.5.8 / local[2] |
-| Input rows | 1,645,503 |
-| Validation checks | 30/30 true (counted from JSON checks) |
-| Failed checks / errors | [] / [] |
-| Failure stage | null |
-
-| CSV output directory under artifacts/phase3b/ | Output / read-back rows | Result |
-|---|---:|---|
-| day_of_week/ | 21 / 21 | PASS |
-| departure_time_band/ | 12 / 12 | PASS |
-| delay_causes/ | 15 / 15 | PASS |
-
-All three CSV headers/data were inspected. JSON records successful required-input
-schema, domain/grain, count/rate reconciliation, time-band boundaries, cause
-coverage/minutes/share checks and CSV row-count/value read-back checks. No CSV
-type inference is claimed: read-back used each SQL result's explicit schema.
-
-Source counts from `input.by_month`:
-
-| Month (2025) | Total flights | Completed flights | Delayed completed flights |
-|---|---:|---:|---:|
-| January | 539,747 | 522,269 | 98,130 |
-| February | 504,884 | 496,476 | 103,102 |
-| March | 600,872 | 592,301 | 116,034 |
-| Three-month sum (derived) | 1,645,503 | 1,611,046 | 317,266 |
-
-Both weekday and time-band outputs reconcile to these monthly counts. Scheduled
-departure Missing, Invalid and literal 2400 each have **0 observed rows in every
-month**, as recorded by `missing_times`, `invalid_times` and `midnight_2400`.
-Consequently only four normal bands appear per month (12 rows total), and all
-CSV `scheduled_2400_flights` counts are zero. This run does not exercise nonempty
-Missing/Invalid/2400 cases. All observed completed-flight denominators and monthly
-attributed-minute denominators are positive; zero-denominator branches were not
-exercised by these outputs either.
-
-### Day-of-week observations
-
-Source: `artifacts/phase3b/day_of_week/`. Comparing all seven unrounded rates
-within each month gives:
-
-| Month (2025) | Position by observed rate | Weekday | Delayed / completed flights | Arrival delay rate |
-|---|---|---|---:|---:|
-| January | Highest | Monday (1) | 16,002 / 70,684 | 22.64% |
-| January | Lowest | Wednesday (3) | 10,586 / 79,713 | 13.28% |
-| February | Highest | Thursday (4) | 21,753 / 76,272 | 28.52% |
-| February | Lowest | Tuesday (2) | 10,618 / 65,833 | 16.13% |
-| March | Highest | Sunday (7) | 25,738 / 98,176 | 26.22% |
-| March | Lowest | Tuesday (2) | 9,429 / 72,141 | 13.07% |
-
-The highest-rate weekday changes across months, so these results do not support
-calling one weekday consistently worst. January Friday had more delayed arrivals
-(17,196 / 88,355 = 19.46%) than Monday but a lower rate. Volume and rate answer
-different questions; no average of weekday percentages is used for a monthly rate.
-
-### Scheduled-time-band observations
-
-Source: `artifacts/phase3b/departure_time_band/`. Every cell shows delayed /
-completed flights followed by its arrival delay rate.
-
-| Month (2025) | Night | Morning | Afternoon | Evening |
-|---|---|---|---|---|
-| January | 1,811 / 14,430 (12.55%) | 32,214 / 207,726 (15.51%) | 39,551 / 191,227 (20.68%) | 24,554 / 108,886 (22.55%) |
-| February | 1,781 / 14,282 (12.47%) | 32,082 / 195,866 (16.38%) | 42,221 / 180,233 (23.43%) | 27,018 / 106,095 (25.47%) |
-| March | 1,732 / 19,989 (8.66%) | 30,416 / 228,314 (13.32%) | 47,542 / 206,404 (23.03%) | 36,344 / 137,594 (26.41%) |
-
-Evening has the highest observed rate and Night the lowest in each of the three
-months. Night also has substantially fewer completed flights. This is a descriptive
-comparison of scheduled local-time groups, not evidence that a later departure
-causes delay or a recommendation to reschedule flights without further analysis.
-
-### Delay-cause observations
-
-Source: `artifacts/phase3b/delay_causes/`. The largest recorded category in each
-month, comparing all five unrounded minute shares, is:
-
-| Month (2025) | Largest category | Category minutes / monthly attributed minutes | Minute share |
-|---|---|---:|---:|
-| January | CARRIER_DELAY | 2,510,886 / 6,943,994 | 36.16% |
-| February | LATE_AIRCRAFT_DELAY | 2,735,511 / 7,411,011 | 36.91% |
-| March | LATE_AIRCRAFT_DELAY | 3,281,080 / 8,378,368 | 39.16% |
-
-Carrier and late-aircraft categories are the two largest in each month. January
-late-aircraft minutes are 2,410,759 / 6,943,994 (34.72%); February and March carrier
-minutes are 2,513,734 / 7,411,011 (33.92%) and 2,761,618 / 8,378,368 (32.96%).
-These are shares of attributed minutes among completed ARR_DEL15=1 flights,
-**not percentages of delayed flights caused by a category**.
-
-For every category, reported-cause count equals eligible delayed-flight count:
-January 98,130 / 98,130, February 103,102 / 103,102 and March 116,034 / 116,034.
-Any-cause and all-five-causes counts also equal those eligible counts. Thus
-non-NULL coverage is 100% in each month (derived), including reported zeros.
-This does not mean every category has positive minutes on every flight or that
-the reporting categories explain all operational causes. NULL handling remains
-as defined above, but absent cause-field coverage is not observed in this eligible
-population. Monthly shares sum to approximately 100% under the recorded checks;
-the repeated monthly denominators must not be added across category rows.
-
-### Interpretation limits and completion boundary
-
-These findings describe January–March 2025 only. They do not establish a long-term
-trend, recurring seasonal pattern, causal effect or predictive performance.
-Carrier, airport and route composition may differ between weekday/time groups;
-no adjustment for those differences or statistical significance analysis was
-performed here. Completed-only delay rates exclude cancelled/diverted flights
-and do not measure total passenger disruption. Reporting coverage is not proof
-of perfect data, and validation PASS is not a production benchmark.
-
-Implementation and runtime validation are completed; Git commit is pending.
-Only these findings and README were finalized. Power BI and Machine Learning
-remain not started.
+# Phân tích hiệu suất theo thứ, khung giờ và nhóm nguyên nhân trễ
+
+## 1. Câu hỏi nghiệp vụ và phạm vi bằng chứng
+
+Arrival Delay Rate toàn kỳ cho biết mức độ trễ chung, nhưng chưa chỉ ra nhóm lịch bay nào cần xem xét sâu hơn. Phase 3B bổ sung ba góc nhìn: ngày trong tuần, giờ khởi hành theo lịch và phần phút trễ được báo cáo cho từng nhóm nguyên nhân.
+
+Các phân tích mô tả **những gì đã quan sát trong tháng 01–03/2025**. Chúng không chứng minh nguyên nhân, không dự báo chuyến tiếp theo và chưa đo tác động của một biện pháp cải thiện vận hành.
+
+Nguồn kiểm chứng:
+
+- `artifacts/phase3b/validation_summary.json`, được tạo lúc `2026-10-10T06:38:06.713552+00:00`.
+- Các CSV data part trong `artifacts/phase3b/day_of_week/`, `departure_time_band/` và `delay_causes/`, đã được đọc để đối chiếu findings.
+- [run_phase3b.py](../scripts/run_phase3b.py) và SQL 008–010 để xác định logic thực tế.
+
+Counts, phút và rate/share chưa làm tròn trong CSV là **kết quả trực tiếp**. Các phần trăm dưới đây là cách trình bày fraction nhân 100 và làm tròn hai chữ số. Tổng ba tháng và coverage percentage được ghi rõ là **phép tính suy ra**. Không lấy tỷ lệ đã làm tròn trên dashboard để suy ngược numerator.
+
+Đây là tài liệu của lần chạy đã được owner xác nhận thành công, không ghi nhận một lần chạy mới. Phase 3B đã hoàn thành implementation và runtime validation. Dashboard Power BI ba trang hiện đã được xây dựng và đang hoàn thiện; Machine Learning chưa triển khai. Trạng thái “Power BI chưa bắt đầu” trong bản báo cáo lịch sử không còn là trạng thái hiện tại.
+
+## 2. Input, output và cách tổ chức xử lý
+
+Input duy nhất là `data/processed/flights_cleaned/`. Runner không đọc lại raw CSV, không chạy lại Phase 1–2 và không xây lại bốn bảng Phase 3A.
+
+| SQL | Grain: một dòng đại diện cho | Output dưới `artifacts/phase3b/` |
+| --- | --- | --- |
+| [008_day_of_week.sql](../sql/analytics/008_day_of_week.sql) | `YEAR, MONTH, DAY_OF_WEEK` | `day_of_week/` |
+| [009_departure_time_band.sql](../sql/analytics/009_departure_time_band.sql) | `YEAR, MONTH, time_band` | `departure_time_band/` |
+| [010_delay_causes.sql](../sql/analytics/010_delay_causes.sql) | `YEAR, MONTH, cause_category` | `delay_causes/` |
+
+Runner tạo temporary view `flights_cleaned` và cache 11 cột cần dùng bằng `MEMORY_AND_DISK`. SQL chịu trách nhiệm phân nhóm/tính toán; Python điều phối validation và xuất CSV. Chỉ các aggregate nhỏ được `collect` để kiểm tra, không thu toàn bộ flight-level dataset về driver và không dùng `toPandas()`.
+
+Mỗi output CSV là một **thư mục Spark** chứa data part và metadata, không phải file mang tên thư mục. CSV phục vụ trao đổi kết quả nhỏ; không thay thế cleaned Parquet. Do CSV không lưu kiểu, read-back dùng schema SQL tường minh và cùng quy ước chuỗi `NULL`.
+
+### Counts nguồn dùng để đối chiếu
+
+Nguồn trực tiếp: `input.by_month` trong JSON.
+
+| Tháng 2025 | Total flights | Completed flights | Delayed completed flights |
+| --- | ---: | ---: | ---: |
+| 01 | 539.747 | 522.269 | 98.130 |
+| 02 | 504.884 | 496.476 | 103.102 |
+| 03 | 600.872 | 592.301 | 116.034 |
+| Tổng ba tháng, suy ra | 1.645.503 | 1.611.046 | 317.266 |
+
+Tổng input 1.645.503 cũng được JSON ghi trực tiếp tại `input.row_count`. Counts cancelled 30.640 và diverted 3.817 thuộc evidence Phase 1–2, không phải hai phép đo tách riêng mới trong JSON Phase 3B.
+
+Định nghĩa population và cách tính KPI chung nằm ở [KPI Methodology](kpi_definitions.md); ý nghĩa trường ở [Data Dictionary](data_dictionary.md).
+
+## 3. Day-of-Week Performance
+
+### 3.1. Câu hỏi và phương pháp
+
+**Ngày nào trong tuần có tỷ lệ đến trễ cao hơn trong từng tháng?**
+
+SQL nhóm theo năm, tháng và `DAY_OF_WEEK`, giữ quy ước BTS: 1 = thứ Hai, …, 7 = Chủ nhật. Một nhóm thứ Hai/tháng là toàn bộ các ngày thứ Hai trong tháng đó, không phải một ngày lịch duy nhất.
+
+~~~sql
+COUNT(CASE WHEN flight_status = 'completed'
+           AND ARR_DEL15 = 1 THEN 1 END)
+~~~
+
+Biểu thức trên đếm delayed completed flights. CASE trả NULL cho dòng không thỏa; COUNT bỏ NULL. Mẫu số được đếm riêng bằng điều kiện completed, không bao gồm cancelled/diverted:
+
+~~~text
+Arrival Delay Rate của nhóm = delayed completed / completed
+~~~
+
+`NULLIF(completed_flights, 0)` trả tỷ lệ NULL khi không có completed. Total vẫn bao gồm cả ba trạng thái hợp lệ. Nhóm không xuất hiện không được tạo thêm dòng 0 giả.
+
+Output có bảy cột: ba khóa int, ba counts bigint (`total_flights`, `completed_flights`, `delayed_arrival_flights`), và `arrival_delay_rate` double.
+
+Validation cộng counts của bảy nhóm để khớp counts nguồn từng tháng. Phase 3B kiểm tra miền 1–7, không tính lại thứ từ `FL_DATE`; kiểm tra nhất quán ngày/thứ đã thuộc Phase 1.
+
+### 3.2. Kết quả theo tháng
+
+Đối chiếu cả bảy rate chưa làm tròn trong mỗi tháng cho các nhóm cao nhất/thấp nhất:
+
+| Tháng | Vị trí theo rate | Thứ | Delayed / completed | Arrival Delay Rate |
+| --- | --- | --- | ---: | ---: |
+| 01 | Cao nhất | Thứ Hai | 16.002 / 70.684 | 22,64% |
+| 01 | Thấp nhất | Thứ Tư | 10.586 / 79.713 | 13,28% |
+| 02 | Cao nhất | Thứ Năm | 21.753 / 76.272 | 28,52% |
+| 02 | Thấp nhất | Thứ Ba | 10.618 / 65.833 | 16,13% |
+| 03 | Cao nhất | Chủ nhật | 25.738 / 98.176 | 26,22% |
+| 03 | Thấp nhất | Thứ Ba | 9.429 / 72.141 | 13,07% |
+
+Nguồn: CSV `day_of_week/`. Ngày có rate cao nhất thay đổi giữa các tháng; không đủ căn cứ gọi một thứ là “luôn tệ nhất”.
+
+### 3.3. Vì sao count và rate cho thứ hạng khác nhau?
+
+Thứ Sáu tháng 01 có **17.196 / 88.355 = 19,46%**, nhiều delayed flights hơn thứ Hai (16.002), nhưng rate thấp hơn (22,64%). Count cho biết khối lượng gián đoạn; rate điều chỉnh theo số completed trong nhóm.
+
+Số lần xuất hiện của từng thứ, lịch khai thác và quy mô nhóm có thể khác nhau. Không dùng trung bình các weekday percentages để tính rate tháng; phải cộng delayed rồi chia tổng completed.
+
+Các findings giúp chọn nhóm cần tìm hiểu tiếp, không khẳng định thứ trong tuần gây trễ. Chưa điều chỉnh khác biệt hãng, sân bay, tuyến, lịch bay hoặc sự kiện thời tiết; chưa kiểm định ý nghĩa thống kê.
+
+## 4. Scheduled Departure Time Bands
+
+### 4.1. Vì sao sử dụng scheduled time?
+
+**Tỷ lệ đến trễ khác nhau thế nào giữa các khung giờ khởi hành theo lịch?**
+
+`CRS_DEP_TIME` mô tả lịch dự kiến. Nếu dùng `DEP_TIME` thực tế, một chuyến bị trễ có thể chuyển sang nhóm giờ muộn hơn chính vì đã trễ, làm thay đổi câu hỏi phân tích. Phase 3B giữ cách phân nhóm theo lịch, không thay đổi nguồn.
+
+Giờ là giờ địa phương tại sân bay xuất phát, không phải một trục UTC chung cho mọi sân bay.
+
+| Nhóm | Điều kiện |
+| --- | --- |
+| Night | `0000–0559`, cộng giá trị chính xác `2400` |
+| Morning | `0600–1159` |
+| Afternoon | `1200–1759` |
+| Evening | `1800–2359` |
+| Missing | `CRS_DEP_TIME IS NULL` |
+| Invalid | Có giá trị nhưng không đúng HHmm bốn chữ số và không phải `2400` |
+
+SQL kiểm tra định dạng trước khi so sánh chuỗi. Với HHmm chuẩn có leading zeros, thứ tự chuỗi phù hợp thứ tự giờ trong ngày. Chuỗi sai định dạng không được tự sửa để lọt vào nhóm hợp lệ. Blank còn sót được xếp Invalid; cleaned input đã chuẩn hóa blank thành NULL.
+
+`2400` được xếp Night **chỉ để grouping**, không đổi ngày/tháng chuyến bay. `scheduled_2400_flights` theo dõi riêng trường hợp này.
+
+### 4.2. Kết quả và numerator/denominator
+
+Output có tám cột: YEAR/MONTH int, time_band string, ba counts như phân tích weekday, diagnostic count `scheduled_2400_flights` bigint và rate double.
+
+| Tháng | Khung giờ | Delayed | Completed | Delayed / completed |
+| --- | --- | ---: | ---: | ---: |
+| 01 | Night | 1.811 | 14.430 | 12,55% |
+| 01 | Morning | 32.214 | 207.726 | 15,51% |
+| 01 | Afternoon | 39.551 | 191.227 | 20,68% |
+| 01 | Evening | 24.554 | 108.886 | 22,55% |
+| 02 | Night | 1.781 | 14.282 | 12,47% |
+| 02 | Morning | 32.082 | 195.866 | 16,38% |
+| 02 | Afternoon | 42.221 | 180.233 | 23,43% |
+| 02 | Evening | 27.018 | 106.095 | 25,47% |
+| 03 | Night | 1.732 | 19.989 | 8,66% |
+| 03 | Morning | 30.416 | 228.314 | 13,32% |
+| 03 | Afternoon | 47.542 | 206.404 | 23,03% |
+| 03 | Evening | 36.344 | 137.594 | 26,41% |
+
+Nguồn: CSV `departure_time_band/`. Trong cả ba tháng, Evening có rate cao nhất và Night thấp nhất. Night có ít completed hơn đáng kể; cần đọc volume cùng rate.
+
+Quan sát này chưa chứng minh khởi hành muộn gây trễ, cũng chưa đủ để khuyến nghị đổi lịch khai thác. Cơ cấu tuyến/hãng/sân bay và các yếu tố khác giữa các khung giờ chưa được kiểm soát.
+
+### 4.3. Missing, Invalid và 2400
+
+JSON ghi `missing_times = 0`, `invalid_times = 0` và `midnight_2400 = 0` trong **từng tháng**. Vì vậy chỉ bốn nhóm thông thường xuất hiện mỗi tháng, tổng 12 rows; tất cả `scheduled_2400_flights` trong CSV bằng 0.
+
+Code có nhánh giữ Missing/Invalid và xử lý 2400, nhưng lần chạy dữ liệu thực này **không kiểm nghiệm các nhánh với số dòng khác 0**. PASS không được diễn giải thành bằng chứng bao phủ mọi edge case.
+
+Nếu có Missing/Invalid, chúng vẫn góp vào reconciliation; không bị bỏ để làm biểu đồ đẹp hơn. Mẫu số completed bằng 0 sẽ tạo rate NULL; dữ liệu output lần này không có mẫu số bằng 0.
+
+## 5. Delay Cause Breakdown
+
+### 5.1. Câu hỏi và population
+
+**Trong các chuyến completed có `ARR_DEL15 = 1`, nhóm nguyên nhân báo cáo nào chiếm nhiều phút trễ nhất?**
+
+| Nhóm | Ý nghĩa báo cáo |
+| --- | --- |
+| `CARRIER_DELAY` | Các vấn đề thuộc hoạt động hãng |
+| `WEATHER_DELAY` | Phần phút được quy vào nhóm thời tiết |
+| `NAS_DELAY` | Các yếu tố thuộc National Air System |
+| `SECURITY_DELAY` | An ninh |
+| `LATE_AIRCRAFT_DELAY` | Máy bay phục vụ chặng đến muộn từ chặng trước |
+
+Đây là các nhóm được báo cáo trong BTS, không phải nguyên nhân do project suy luận từ mô hình. Không coi riêng WEATHER_DELAY là toàn bộ ảnh hưởng trực tiếp/gián tiếp của thời tiết.
+
+### 5.2. Logic SQL: từ cột nguyên nhân đến tỷ trọng phút
+
+Query có bốn bước có trách nhiệm riêng:
+
+1. **`eligible`:** lọc completed và label 1; tạo flags có ít nhất một/tất cả cause fields được báo cáo.
+2. **`expanded`:** `STACK(5, …)` chuyển năm cột thành năm dòng category cho mỗi eligible flight, giữ cả giá trị NULL.
+3. **`category_totals`:** GROUP BY YEAR/MONTH/category để đếm coverage và cộng phút.
+4. **`denominators`:** `SUM(attributed_minutes) OVER (PARTITION BY YEAR, MONTH)` tạo mẫu số chung của tháng mà không làm mất dòng category.
+
+~~~text
+attributed_minutes(category, month)
+    = SUM(phút được báo cáo của category trên eligible flights)
+
+cause_minute_share
+    = attributed_minutes / NULLIF(monthly_attributed_minutes, 0)
+~~~
+
+Window SUM ở đây cần thiết vì phải vừa giữ grain category-month vừa có tổng tháng trên mỗi dòng. Đó là tổng phút của năm category, **không phải số chuyến trễ** và không phải signed sum ARR_DELAY.
+
+### 5.3. Schema và nguy cơ đếm trùng
+
+Output gồm YEAR/MONTH int, cause_category string và bảy measures sau:
+
+| Measure | Kiểu | Ý nghĩa |
+| --- | --- | --- |
+| `eligible_delayed_flights` | bigint | Số completed có label 1 trong tháng |
+| `reported_cause_flights` | bigint | Eligible có cause field này không NULL, kể cả giá trị 0 |
+| `flights_with_any_reported_cause` | bigint | Eligible có ít nhất một cause field không NULL |
+| `flights_with_all_reported_causes` | bigint | Eligible có cả năm cause fields không NULL |
+| `attributed_minutes` | double | Tổng phút category, tử số |
+| `monthly_attributed_minutes` | double | Tổng phút năm category trong tháng, mẫu số |
+| `cause_minute_share` | double | Tỷ trọng dạng fraction, NULL nếu không xác định |
+
+Eligible count, any/all coverage counts và mẫu số tháng lặp lại trên năm dòng category. **Không cộng những số tháng này qua năm dòng**. Một chuyến có thể đóng góp phút cho nhiều nhóm.
+
+Muốn tính tỷ lệ chuyến có phút dương của một nguyên nhân cần một numerator khác: số chuyến có cause minutes > 0. `reported_cause_flights` không phải numerator đó vì bao gồm reported zero. Project không thay minute share bằng tỷ lệ chuyến.
+
+### 5.4. NULL, reported zero và coverage
+
+- NULL: không có giá trị được báo cáo; không tự điền 0.
+- 0: đã báo cáo và không có phút ở category đó; vẫn được COUNT(cause_minutes) đếm.
+- `SUM` bỏ từng NULL. Category không có giá trị nào → attributed_minutes NULL và reported count 0.
+- Có reported values nhưng tất cả bằng 0 → tổng phút 0; khác trường hợp không có báo cáo.
+- Tổng tháng NULL hoặc 0 → share NULL, không trình bày như 0% có ý nghĩa.
+- Tháng có eligible flights vẫn có năm category rows; tháng không có eligible không tạo năm dòng giả.
+
+Shares cộng gần 100% khi mẫu số dương không tự chứng minh coverage đầy đủ: đó cũng có thể chỉ là phân bổ của phần phút đã được báo cáo.
+
+### 5.5. Kết quả từng tháng
+
+Mẫu số trực tiếp từ CSV: tháng 01 **6.943.994 phút**, tháng 02 **7.411.011 phút**, tháng 03 **8.378.368 phút**. Mỗi ô dưới đây thể hiện tử số phút và tỷ trọng trên mẫu số tháng tương ứng.
+
+| Category | Tháng 01: phút (share) | Tháng 02: phút (share) | Tháng 03: phút (share) |
+| --- | ---: | ---: | ---: |
+| CARRIER_DELAY | 2.510.886 (36,16%) | 2.513.734 (33,92%) | 2.761.618 (32,96%) |
+| LATE_AIRCRAFT_DELAY | 2.410.759 (34,72%) | 2.735.511 (36,91%) | 3.281.080 (39,16%) |
+| NAS_DELAY | 1.381.827 (19,90%) | 1.666.833 (22,49%) | 1.832.804 (21,88%) |
+| WEATHER_DELAY | 629.972 (9,07%) | 486.199 (6,56%) | 492.193 (5,87%) |
+| SECURITY_DELAY | 10.550 (0,15%) | 8.734 (0,12%) | 10.673 (0,13%) |
+
+Ví dụ: `3.281.080 / 8.378.368 ≈ 39,16%` là **tỷ trọng phút trễ** của late-aircraft trong tháng 03, không phải 39,16% chuyến bị trễ do nhóm đó.
+
+Carrier và late-aircraft là hai nhóm lớn nhất trong cả ba tháng. Carrier đứng đầu tháng 01; late-aircraft đứng đầu tháng 02 và 03. Đây là gợi ý nơi cần điều tra vận hành sâu hơn, không chứng minh một biện pháp cụ thể sẽ giảm bao nhiêu chuyến trễ.
+
+### 5.6. Coverage quan sát được
+
+| Tháng | Reported count của từng category / eligible | Any reported | All five reported |
+| --- | ---: | ---: | ---: |
+| 01 | 98.130 / 98.130 | 98.130 | 98.130 |
+| 02 | 103.102 / 103.102 | 103.102 | 103.102 |
+| 03 | 116.034 / 116.034 | 116.034 | 116.034 |
+
+Coverage không NULL là **100% mỗi tháng**, suy ra từ các counts trực tiếp trên, bao gồm reported zero. Không có nghĩa cả năm nguyên nhân đều có phút dương trên mọi chuyến, hoặc báo cáo đã giải thích đầy đủ mọi nguyên nhân thực tế.
+
+Phân tích không đọc `ARR_DELAY` để ép tổng cause minutes bằng signed delay. Hai đại lượng khác population và cách đo; không sử dụng reconciliation giữa chúng nếu chưa có định nghĩa nghiệp vụ phù hợp.
+
+## 6. Validation đã thực hiện và mức đảm bảo
+
+| Kết quả trong evidence | Giá trị |
+| --- | --- |
+| `overall_status` và input status | PASS |
+| Input rows | 1.645.503 |
+| Runtime | Spark 3.5.8, `local[2]` |
+| Checks | 30/30 có `passed = true` |
+| `failed_checks`, `errors` | Danh sách rỗng |
+| `failure_stage` | NULL |
+| Day-of-week: output/read-back | 21 / 21 rows, PASS |
+| Departure bands: output/read-back | 12 / 12 rows, PASS |
+| Delay causes: output/read-back | 15 / 15 rows, PASS |
+
+30/30 là đếm từ checks trong JSON đã lưu. Exit code 0 là owner xác nhận, không phải field trong JSON.
+
+Các lớp validation của [runner](../scripts/run_phase3b.py):
+
+1. Kiểm tra 11 cột đầu vào cần thiết và kiểu, nguồn không rỗng, đúng ba tháng MVP; domain weekday/status/label hợp lệ. Không gọi đây là kiểm tra lại toàn bộ 38 cột.
+2. Cause values khi có phải hữu hạn và không âm; tổng tháng hữu hạn.
+3. Grain duy nhất, nhãn nhóm hợp lệ; `0 ≤ delayed ≤ completed ≤ total`; rate đúng công thức, domain 0–1 và NULL khi mẫu số 0.
+4. Tổng counts weekday/time band theo tháng khớp phép aggregate nguồn riêng. Boundary counts riêng đối chiếu bốn time bands và Missing/Invalid/2400.
+5. Năm cause categories ở tháng có eligible; coverage, phút và mẫu số khớp nguồn; tổng shares gần 1 khi mẫu số dương.
+6. Ghi CSV rồi đọc lại với schema tường minh, header checking, `FAILFAST` và quy ước NULL thống nhất. So sánh cả số dòng và các giá trị cùng multiplicity bằng `Counter` trên aggregate nhỏ.
+
+Counts và CSV row values/multiplicities so sánh chính xác. Kiểm tra công thức số thực dùng relative tolerance `1E-12` và absolute tolerance `1E-9`; không làm tròn SQL để cưỡng ép khớp.
+
+Output directory phải là thư mục mới dưới `artifacts/` và không chồng lấn input. Runner từ chối directory đã tồn tại, không overwrite/append hoặc tự xóa partial outputs. Check thất bại làm raise exception; các bước chưa tới không được báo PASS.
+
+Lần chạy thực tế có mọi completed denominator và monthly-minute denominator dương, không có Missing/Invalid/2400 và không thiếu cause field trong eligible population. Do đó không tuyên bố đã thử runtime mọi nhánh xử lý ngoại lệ. Validation PASS không phải chứng nhận dữ liệu hoàn hảo hay production benchmark.
+
+## 7. Tổng hợp findings và giới hạn diễn giải
+
+Ba kết luận mô tả có đủ evidence:
+
+- **Theo thứ:** nhóm có rate cao nhất thay đổi giữa tháng 01, 02, 03. Count cao nhất không nhất thiết rate cao nhất.
+- **Theo scheduled time:** Evening có rate cao nhất và Night thấp nhất trong cả ba tháng quan sát; quy mô các nhóm khác nhau.
+- **Theo cause minutes:** Carrier và late-aircraft chiếm hai phần lớn nhất mỗi tháng; late-aircraft đứng đầu trong tháng 02–03.
+
+Giới hạn chung:
+
+- Chỉ ba tháng, chưa đủ kết luận mùa vụ lặp lại hoặc xu hướng dài hạn.
+- Không kiểm soát cơ cấu hãng/tuyến/sân bay, không thực hiện causal inference hoặc kiểm định thống kê.
+- Arrival delay rates chỉ xét completed, không bao quát mức gián đoạn do cancelled/diverted hay tác động lên hành khách.
+- Cause-minute share là phân bố phút được quy theo báo cáo, không phải xác suất một chuyến bị trễ.
+- Không có chi phí, doanh thu hoặc số hành khách để lượng hóa business impact tài chính.
+- Các findings là snapshot phạm vi đã nêu. Text Key Findings trên dashboard là static, không tự đổi theo Month Slicer; không diễn giải nó như nhận xét động cho mọi filter context.
+- Dashboard đã được xây dựng nhưng tài liệu này không chứng minh mọi DAX measure hoặc tương tác slicer đã được đối chiếu. Không có ML performance results.
+
+Hướng dẫn chạy được giữ tại [README](../README.md), không lặp nguyên khối setup trong tài liệu findings. Không cần chạy lại pipeline để sử dụng các bằng chứng hiện có.
+
+## 8. Câu hỏi phỏng vấn gắn với phân tích
+
+- **Vì sao dùng CRS_DEP_TIME thay DEP_TIME?** Để phân nhóm theo lịch dự kiến; actual time có thể đã bị dịch chuyển bởi sự trễ đang nghiên cứu.
+- **Vì sao 100% reporting coverage không đồng nghĩa mọi chuyến chịu mọi nguyên nhân?** COUNT không NULL bao gồm reported zero; cần numerator phút dương khác nếu hỏi tỷ lệ chuyến bị ảnh hưởng.
+- **Vì sao window SUM phù hợp ở delay causes?** Cần tổng tháng làm mẫu số trong khi giữ grain category-month.
+- **30/30 checks PASS chứng minh gì?** Kết quả thỏa các hợp đồng đã kiểm tra trên dữ liệu quan sát; không chứng minh nhân quả hay bao phủ các edge cases không xuất hiện.
+
+## Những điểm cần ghi nhớ
+
+- So sánh count và rate cùng nhau; rate luôn đi kèm population và denominator.
+- Weekday/time bands dùng completed làm mẫu số, không tự loại dòng khỏi total.
+- Scheduled time là giờ địa phương; Missing, Invalid và 2400 đều có 0 dòng quan sát trong lần chạy này.
+- Delay-cause share đo phút, không đo tỷ lệ chuyến; NULL khác reported zero.
+- Kết quả validation và findings là evidence lịch sử đã lưu, không phải pipeline vừa chạy lại.

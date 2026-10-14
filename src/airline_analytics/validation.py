@@ -10,6 +10,10 @@ from pyspark.sql.types import DoubleType
 
 from airline_analytics.cleaning import (
     DOUBLE_MEASURE_COLUMNS,
+    ESSENTIAL_ARRIVAL_COLUMNS,
+    RAW_LINEAGE_COLUMNS,
+    REJECTED_COLUMNS,
+    classify_arrival_records,
     VALID_FLIGHT_STATUSES,
     expected_cleaned_types,
     normalized_text,
@@ -18,6 +22,7 @@ from airline_analytics.cleaning import (
 from airline_analytics.quality_checks import count_when
 from airline_analytics.schema import (
     BINARY_FLAG_COLUMNS,
+    EXPECTED_COLUMNS,
     INTEGER_COLUMNS,
     TIME_COLUMNS,
     VALID_HHMM_PATTERN,
@@ -46,7 +51,7 @@ def collect_raw_summary(raw_df: DataFrame) -> dict[str, Any]:
     """Collect raw month and flight-status counts in one grouped action."""
     status_conditions = _raw_status_conditions()
     rows = (
-        raw_df.groupBy("_source_year", "_source_month")
+        raw_df.groupBy("_source_year", "_source_month", "_source_file")
         .agg(
             F.count(F.lit(1)).alias("row_count"),
             *[
@@ -54,7 +59,7 @@ def collect_raw_summary(raw_df: DataFrame) -> dict[str, Any]:
                 for status, condition in status_conditions.items()
             ],
         )
-        .orderBy("_source_year", "_source_month")
+        .orderBy("_source_year", "_source_month", "_source_file")
         .collect()
     )
 
@@ -74,6 +79,10 @@ def collect_raw_summary(raw_df: DataFrame) -> dict[str, Any]:
     return {
         "total_rows": sum(item["row_count"] for item in by_month),
         "by_month": by_month,
+        "by_file": [
+            {"file_name": row["_source_file"], "row_count": int(row["row_count"])}
+            for row in rows
+        ],
         "flight_status": status_counts,
     }
 
@@ -323,4 +332,111 @@ def compare_cleaned_schema(df: DataFrame) -> dict[str, Any]:
             type_mismatches, key=lambda item: item["column"]
         ),
         "pass": not missing_columns and not extra_columns and not type_mismatches,
+    }
+
+
+def collect_arrival_missingness(df: DataFrame) -> dict[str, Any]:
+    """Typed completed-flight missingness; ARR_DELAY_NEW alone is not rejected."""
+    completed = F.col("flight_status") == "completed"
+    essential_valid = (
+        F.col("ARR_TIME").rlike(VALID_HHMM_PATTERN)
+        & F.col("ARR_DELAY").isNotNull()
+        & (~F.isnan("ARR_DELAY"))
+        & (F.abs(F.col("ARR_DELAY")) <= F.lit(1.7976931348623157e308))
+        & F.col("ARR_DEL15").isin(0, 1)
+    )
+    rules = {
+        **{f"completed_missing_{c.lower()}": completed & F.col(c).isNull()
+           for c in (*ESSENTIAL_ARRIVAL_COLUMNS, "ARR_DELAY_NEW")},
+        "completed_missing_essential_arrival": completed & (
+            F.col("ARR_TIME").isNull() | F.col("ARR_DELAY").isNull()
+            | F.col("ARR_DEL15").isNull()
+        ),
+        "completed_only_missing_arr_delay_new": (
+            completed & essential_valid & F.col("ARR_DELAY_NEW").isNull()
+        ),
+    }
+    rows = [row.asDict() for row in df.groupBy("YEAR", "MONTH").agg(
+        *[count_when(condition).alias(name) for name, condition in rules.items()]
+    ).orderBy("YEAR", "MONTH").collect()]
+    return {
+        "totals": {name: sum(row[name] for row in rows) for name in rules},
+        "by_month": rows,
+        "arr_delay_new_policy": "Report only; no imputation or automatic rejection.",
+    }
+
+
+def collect_partition_counts(df: DataFrame, *, raw: bool) -> list[dict[str, Any]]:
+    """Small joint file/month/status counts; source flags define raw status."""
+    if raw:
+        conditions = _raw_status_conditions()
+        status = F.lit("invalid")
+        for name in ("completed", "cancelled", "diverted"):
+            status = F.when(conditions[name], F.lit(name)).otherwise(status)
+        frame = df.select(
+            F.col("_source_year").alias("year"),
+            F.col("_source_month").alias("month"), "_source_file",
+            status.alias("flight_status"),
+        )
+    else:
+        frame = df.select(
+            F.col("YEAR").alias("year"), F.col("MONTH").alias("month"),
+            "_source_file", "flight_status",
+        )
+    return [row.asDict() for row in frame.groupBy(
+        "year", "month", "_source_file", "flight_status"
+    ).count().orderBy("year", "month", "_source_file", "flight_status").collect()]
+
+
+def reconcile_partition_counts(raw: list[dict], accepted: list[dict], rejected: list[dict]) -> bool:
+    def as_map(rows: list[dict]) -> dict:
+        return {(r["year"], r["month"], r["_source_file"], r["flight_status"]): r["count"]
+                for r in rows}
+    original, kept, removed = as_map(raw), as_map(accepted), as_map(rejected)
+    return all(original.get(key, 0) == kept.get(key, 0) + removed.get(key, 0)
+               for key in original.keys() | kept.keys() | removed.keys())
+
+
+def same_dataframe_values(left: DataFrame, right: DataFrame) -> bool:
+    """Exact multiset comparison, preserving duplicates and NULL values."""
+    left_types = {f.name: f.dataType.simpleString() for f in left.schema}
+    right_types = {f.name: f.dataType.simpleString() for f in right.schema}
+    if left_types != right_types:
+        return False
+    ordered = right.select(*left.columns)
+    return (left.exceptAll(ordered).limit(1).count() == 0
+            and ordered.exceptAll(left).limit(1).count() == 0)
+
+
+def compare_rejected_schema(df: DataFrame) -> dict[str, Any]:
+    expected = {c: "string" for c in EXPECTED_COLUMNS}
+    expected.update(_source_file="string", _source_year="int", _source_month="int",
+                    rejection_reason="string", missing_fields="array<string>")
+    actual = {f.name: f.dataType.simpleString() for f in df.schema}
+    return {"expected_types": expected, "actual_types": actual,
+            "pass": actual == expected and len(df.columns) == len(expected)}
+
+
+def validate_rejected_diagnostic(rejected: DataFrame, diagnostic: dict) -> dict[str, Any]:
+    """Match ALL rejected source values to reviewed evidence, not a flight ID."""
+    from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+    columns = (*EXPECTED_COLUMNS, *RAW_LINEAGE_COLUMNS)
+    schema = StructType([
+        StructField(c, IntegerType() if c in ("_source_year", "_source_month")
+                    else StringType(), True) for c in columns
+    ])
+    expected = rejected.sparkSession.createDataFrame(
+        [tuple(row[c] for c in columns) for row in diagnostic["raw_rows"]], schema,
+    )
+    expected_rejected = classify_arrival_records(expected).select(*REJECTED_COLUMNS)
+    actual_count = rejected.count()
+    return {
+        "actual_count": actual_count,
+        "reviewed_count": diagnostic["affected_rows"],
+        "actual_sample": [row.asDict() for row in rejected.limit(5).collect()],
+        "sample_is_bounded": True,
+        "pass": (actual_count == diagnostic["affected_rows"]
+                 and same_dataframe_values(rejected, expected_rejected)),
+        "comparison": "All parsed source fields, lineage, missing fields and reason; EXCEPT ALL both ways.",
     }

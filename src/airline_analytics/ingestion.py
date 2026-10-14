@@ -34,7 +34,7 @@ def validate_input_files(paths: Sequence[Path]) -> list[dict[str, Any]]:
     """Validate filenames, sizes, hashes, and exact column order."""
     expected_names = set(EXPECTED_FILE_METADATA)
     actual_names = {path.name for path in paths}
-    if actual_names != expected_names:
+    if actual_names != expected_names or len(paths) != len(expected_names):
         missing = sorted(expected_names - actual_names)
         unexpected = sorted(actual_names - expected_names)
         raise ValueError(
@@ -48,6 +48,8 @@ def validate_input_files(paths: Sequence[Path]) -> list[dict[str, Any]]:
             raise FileNotFoundError(f"CSV file not found: {path}")
 
         expected = EXPECTED_FILE_METADATA[path.name]
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", str(expected["sha256"])):
+            raise ValueError(f"Invalid SHA-256 metadata for {path.name}")
         size_bytes = path.stat().st_size
         if size_bytes != expected["size_bytes"]:
             raise ValueError(

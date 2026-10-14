@@ -18,19 +18,19 @@ from airline_analytics.schema import EXPECTED_FILE_METADATA
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Profile the three verified BTS raw CSV files for Phase 1."
+        description="Profile the twelve configured BTS raw CSV files for 2025."
     )
     parser.add_argument(
         "--input-dir",
         type=Path,
         default=Path("data/raw"),
-        help="Directory containing the three verified monthly CSV files.",
+        help="Directory containing the twelve verified monthly CSV files.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("artifacts/phase1/profile_summary.json"),
-        help="JSON path for the complete profiling results.",
+        default=Path("artifacts/phase1_2025/profile_summary.json"),
+        help="New JSON path; existing evidence is never overwritten.",
     )
     return parser.parse_args()
 
@@ -55,7 +55,7 @@ def write_report(report: dict[str, Any], output_path: Path) -> None:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         **report,
     }
-    with output_path.open("w", encoding="utf-8") as output_file:
+    with output_path.open("x", encoding="utf-8") as output_file:
         json.dump(payload, output_file, indent=2, ensure_ascii=False)
 
 
@@ -106,6 +106,10 @@ def print_summary(report: dict[str, Any], output_path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.output.exists():
+        raise FileExistsError(f"Profiling report already exists: {args.output}")
+    if args.output.resolve().is_relative_to(args.input_dir.resolve()):
+        raise ValueError("Profiling report must be outside the raw input directory")
     input_paths = [args.input_dir / name for name in EXPECTED_FILE_METADATA]
 
     print("Validating filenames, sizes, headers, and SHA-256 hashes...")
@@ -121,6 +125,12 @@ def main() -> None:
         report = build_profile_report(raw_df, input_paths, file_metadata)
         write_report(report, args.output)
         print_summary(report, args.output)
+        failed_coverage = [
+            name for name, passed in report["coverage_checks"].items() if not passed
+        ]
+        if failed_coverage:
+            raise ValueError(f"Profiling coverage failed: {failed_coverage}; see JSON")
+        print("Profiling finished; quality review is required before cleaning.")
     finally:
         if raw_df is not None:
             raw_df.unpersist()

@@ -6,8 +6,10 @@ from math import isclose, isfinite
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from airline_analytics.cleaning import expected_cleaned_types
+from airline_analytics.schema import EXPECTED_MONTHS, EXPECTED_YEAR
 
 
 TABLE_GRAINS = {
@@ -27,6 +29,11 @@ RATE_COMPONENTS = {
     "cancellation_rate": ("cancelled_flights", "total_flights"),
     "diversion_rate": ("diverted_flights", "total_flights"),
 }
+# Regression tolerates only floating-point aggregation-order noise, never counts.
+REGRESSION_REL_TOL = 1E-12
+REGRESSION_ABS_TOL = 1E-9
+MVP_YEAR = 2025
+MVP_MONTHS = (1, 2, 3)
 
 
 def schema_check(df: DataFrame, expected: dict[str, str]) -> dict[str, Any]:
@@ -46,7 +53,7 @@ def violation_counts_sql(rules: dict[str, str]) -> str:
     )
 
 
-def validate_input(spark: SparkSession, df: DataFrame) -> dict[str, Any]:
+def validate_input(spark: SparkSession, df: DataFrame, baseline: dict[str, Any]) -> dict[str, Any]:
     """Check the existing cleaned contract without recasting or dropping rows."""
     schema = schema_check(df, expected_cleaned_types())
     checks = {"cleaned_schema": schema["passed"]}
@@ -54,7 +61,8 @@ def validate_input(spark: SparkSession, df: DataFrame) -> dict[str, Any]:
     if not schema["passed"]:
         return result
     rules = {
-        "invalid_period": "YEAR = 2025 AND MONTH IN (1, 2, 3)",
+        "invalid_period": f"YEAR = {EXPECTED_YEAR} AND MONTH IN "
+                          f"({', '.join(str(month) for month in EXPECTED_MONTHS)})",
         "invalid_date": "FL_DATE IS NOT NULL AND YEAR(FL_DATE) = YEAR "
                         "AND MONTH(FL_DATE) = MONTH",
         "missing_grouping_keys": " AND ".join(
@@ -70,17 +78,30 @@ def validate_input(spark: SparkSession, df: DataFrame) -> dict[str, Any]:
         "invalid_arrival_label": """CASE WHEN flight_status = 'completed'
             THEN ARR_DEL15 IS NOT NULL AND ARR_DEL15 IN (0, 1)
             ELSE ARR_DEL15 IS NULL END""",
+        "missing_completed_arrival": """flight_status <> 'completed' OR
+            (ARR_TIME IS NOT NULL AND TRIM(ARR_TIME) <> ''
+             AND ARR_DELAY IS NOT NULL AND ARR_DEL15 IS NOT NULL)""",
+        "invalid_completed_arrival_time": """flight_status <> 'completed' OR
+            ARR_TIME RLIKE '^([01][0-9]|2[0-3])[0-5][0-9]$' OR ARR_TIME = '2400'""",
         "nonfinite_completed_delay": """flight_status <> 'completed'
             OR ARR_DELAY IS NULL
             OR (NOT ISNAN(ARR_DELAY) AND ABS(ARR_DELAY) <= 1.7976931348623157E308)""",
     }
-    values = spark.sql(
-        "SELECT COUNT(*) AS row_count, " + violation_counts_sql(rules)
-        + " FROM flights_cleaned"
-    ).first().asDict()
-    checks["input_not_empty"] = values["row_count"] > 0
-    checks.update({name: values[name] == 0 for name in rules})
-    result.update(row_count=values["row_count"], violations={k: values[k] for k in rules})
+    status_counts = ", ".join(
+        f"COUNT(CASE WHEN flight_status = '{status}' THEN 1 END) AS {status}_flights"
+        for status in ("completed", "cancelled", "diverted")
+    )
+    rows = [row.asDict() for row in spark.sql(
+        "SELECT YEAR, MONTH, COUNT(*) AS total_flights, " + status_counts + ", "
+        + violation_counts_sql(rules)
+        + " FROM flights_cleaned GROUP BY YEAR, MONTH ORDER BY YEAR, MONTH"
+    ).collect()]  # Month summaries only; no flight-level collect/cache.
+    total = sum(row["total_flights"] for row in rows)
+    violations = {name: sum(row[name] for row in rows) for name in rules}
+    checks["input_not_empty"] = total > 0
+    checks.update({name: value == 0 for name, value in violations.items()})
+    checks.update(reconcile_status_months(rows, baseline))
+    result.update(row_count=total, by_month=rows, violations=violations)
     return result
 
 
@@ -96,6 +117,7 @@ def metric_rules() -> dict[str, str]:
         "label_reconciliation": "completed_flights = delayed_arrival_flights "
                                 "+ on_time_arrival_flights",
         "observation_count": "arrival_delay_observed_flights <= completed_flights",
+        "reviewed_completed_delay_present": "arrival_delay_observed_flights = completed_flights",
         "delay_sum_null_handling": """CASE WHEN arrival_delay_observed_flights = 0
             THEN arrival_delay_minutes_sum IS NULL
             ELSE arrival_delay_minutes_sum IS NOT NULL
@@ -193,6 +215,8 @@ def reconcile_baseline(monthly: list[dict[str, Any]], baseline: dict[str, Any]) 
     expected_months = {(r["year"], r["month"]): r["row_count"] for r in baseline["by_month"]}
     actual_totals = {name: sum(row[name] for row in monthly) for name in COUNT_COLUMNS}
     checks = {
+        "configured_month_coverage": set(actual_months) == set(expected_months)
+        == {(EXPECTED_YEAR, month) for month in EXPECTED_MONTHS},
         "phase2_month_counts": actual_months == expected_months,
         "phase2_total": actual_totals["total_flights"] == baseline["total_rows"],
         "phase2_no_invalid_status": baseline["flight_status"]["invalid"] == 0,
@@ -201,7 +225,105 @@ def reconcile_baseline(monthly: list[dict[str, Any]], baseline: dict[str, Any]) 
         checks["phase2_" + status] = (
             actual_totals[status + "_flights"] == baseline["flight_status"][status]
         )
-    return {"checks": checks, "actual_totals": actual_totals, "baseline": baseline}
+    checks.update(reconcile_status_months(monthly, baseline))
+    available_sums = [row["arrival_delay_minutes_sum"] for row in monthly
+                      if row["arrival_delay_minutes_sum"] is not None]
+    annual = dict(actual_totals)
+    annual["arrival_delay_minutes_sum"] = sum(available_sums) if available_sums else None
+    for metric, (numerator, denominator) in {
+        **RATE_COMPONENTS,
+        "average_arrival_delay": ("arrival_delay_minutes_sum", "arrival_delay_observed_flights"),
+    }.items():
+        annual[metric] = (annual[numerator] / annual[denominator]
+                          if annual[denominator] > 0 and annual[numerator] is not None else None)
+    return {"checks": checks, "actual_totals": actual_totals, "baseline": baseline,
+            "annual_summary": annual, "annual_method": "Ratio of sums; no persisted annual table."}
+
+
+def reconcile_status_months(monthly: list[dict[str, Any]], baseline: dict[str, Any]) -> dict[str, bool]:
+    """Exact counts against reviewed Phase 2, including each monthly status."""
+    actual = {(r["YEAR"], r["MONTH"]): r for r in monthly}
+    expected = {(r["YEAR"], r["MONTH"]): r for r in baseline["status_by_month"]}
+    same_periods = (set(actual) == set(expected)
+                    == {(EXPECTED_YEAR, month) for month in EXPECTED_MONTHS})
+    checks = {"phase2_exact_month_coverage": same_periods and len(monthly) == len(expected)}
+    for metric in ("total_flights", "completed_flights", "cancelled_flights", "diverted_flights"):
+        checks["phase2_monthly_" + metric] = same_periods and all(
+            actual[period][metric] == expected[period][metric] for period in expected
+        )
+    return checks
+
+
+def compare_mvp_table(current: DataFrame, reference: DataFrame, grain: tuple[str, ...]) -> dict[str, Any]:
+    """Compare Q1 aggregates in Spark, collecting only scalar mismatch counts.
+
+    Counts/keys are exact. Doubles use max(abs_tol, rel_tol * max(abs(a), abs(b))).
+    NULL equals only NULL. No rounding, count tolerance, or full-route collect.
+    """
+    selected = current.filter((F.col("YEAR") == MVP_YEAR) & F.col("MONTH").isin(*MVP_MONTHS))
+    expected_types = {f.name: f.dataType.simpleString() for f in current.schema}
+    schema = schema_check(reference, expected_types)
+    result = {
+        "checks": {"schema": schema["passed"]}, "schema": schema,
+        "period": {"year": MVP_YEAR, "months": list(MVP_MONTHS)},
+        "double_tolerance": {"absolute": REGRESSION_ABS_TOL, "relative": REGRESSION_REL_TOL},
+    }
+    if not schema["passed"]:
+        return result
+
+    def grain_stats(frame: DataFrame) -> dict[str, int]:
+        valid_key = F.lit(True)
+        for key in grain:
+            valid_key = valid_key & F.col(key).isNotNull()
+        valid_period = (F.col("YEAR") == MVP_YEAR) & F.col("MONTH").isin(*MVP_MONTHS)
+        return frame.agg(
+            F.count("*").alias("rows"),
+            F.countDistinct(F.struct(*grain)).alias("unique_keys"),
+            F.count(F.when(~F.coalesce(valid_key & valid_period, F.lit(False)), 1)).alias("invalid_keys"),
+            F.countDistinct(F.struct("YEAR", "MONTH")).alias("periods"),
+        ).first().asDict()
+
+    stats = {"current": grain_stats(selected), "mvp": grain_stats(reference)}
+    result["grain"] = stats
+    result["checks"]["grain_and_periods"] = all(
+        s["rows"] > 0 and s["rows"] == s["unique_keys"] and s["invalid_keys"] == 0
+        and s["periods"] == len(MVP_MONTHS) for s in stats.values()
+    )
+    result["checks"]["row_count"] = stats["current"]["rows"] == stats["mvp"]["rows"]
+    if not result["checks"]["grain_and_periods"]:
+        return result  # Avoid a many-to-many comparison of malformed references.
+
+    joined = (selected.withColumn("_present", F.lit(1)).alias("new")
+              .join(reference.withColumn("_present", F.lit(1)).alias("old"), list(grain), "full"))
+    differences = {
+        "missing_keys": F.col("new._present").isNull(),
+        "extra_keys": F.col("old._present").isNull(),
+    }
+    doubles = (*RATE_COMPONENTS, "arrival_delay_minutes_sum", "average_arrival_delay")
+    for metric in COUNT_COLUMNS:
+        differences[metric] = ~F.col("new." + metric).eqNullSafe(F.col("old." + metric))
+    for metric in doubles:
+        left, right = F.col("new." + metric), F.col("old." + metric)
+        finite = (~F.isnan(left)) & (~F.isnan(right)) & (
+            F.abs(left) <= 1.7976931348623157e308
+        ) & (F.abs(right) <= 1.7976931348623157e308)
+        tolerance = F.greatest(F.lit(REGRESSION_ABS_TOL),
+                              F.lit(REGRESSION_REL_TOL) * F.greatest(F.abs(left), F.abs(right)))
+        equal = ((left.isNull() & right.isNull()) | (
+            left.isNotNull() & right.isNotNull() & finite & (F.abs(left - right) <= tolerance)
+        ))
+        differences[metric] = ~F.coalesce(equal, F.lit(False))
+    counts = joined.agg(*[
+        F.count(F.when(condition, 1)).alias(name) for name, condition in differences.items()
+    ]).first().asDict()
+    result["mismatches"] = {
+        "keys": {k: counts[k] for k in ("missing_keys", "extra_keys")},
+        "exact_counts": {k: counts[k] for k in COUNT_COLUMNS},
+        "double_metrics": {k: counts[k] for k in doubles},
+    }
+    for group, metrics in result["mismatches"].items():
+        result["checks"][group] = all(value == 0 for value in metrics.values())
+    return result
 
 
 def require_checks(result: dict[str, Any], label: str) -> None:

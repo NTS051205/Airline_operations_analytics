@@ -16,8 +16,12 @@ from airline_analytics.quality_checks import (
     profile_duplicates,
 )
 from airline_analytics.schema import (
+    DATASET_SCOPE,
     DOUBLE_COLUMNS,
     EXPECTED_COLUMNS,
+    EXPECTED_FILE_METADATA,
+    EXPECTED_MONTHS,
+    EXPECTED_YEAR,
     FLIGHT_DATE_PATTERN,
     INTEGER_COLUMNS,
     LOGICAL_TYPES,
@@ -238,8 +242,22 @@ def build_profile_report(
     file_level = profile_file_level_metrics(df)
     type_validation = profile_type_validation(df)
     status_profile = file_level["flight_status"]
+    observed_files = {item["file_name"] for item in file_level["file_counts"]}
+    observed_periods = {
+        (item["source_year"], item["source_month"])
+        for item in file_level["file_counts"]
+    }
+    coverage_checks = {
+        "all_configured_files_have_rows": observed_files == set(EXPECTED_FILE_METADATA),
+        "all_configured_periods_present": observed_periods
+        == {(EXPECTED_YEAR, month) for month in EXPECTED_MONTHS},
+        "status_reconciles": status_profile["reconciles_to_row_count"],
+    }
     return {
-        "scope": "BTS Reporting Carrier On-Time Performance, 2025-01 to 2025-03",
+        "scope": DATASET_SCOPE,
+        "configured_period": {"year": EXPECTED_YEAR, "months": list(EXPECTED_MONTHS)},
+        "coverage_checks": coverage_checks,
+        "review_status": "PENDING_OWNER_REVIEW",
         "input_files": verified_file_metadata,
         "input_paths": [str(path.resolve()) for path in input_paths],
         "header": {

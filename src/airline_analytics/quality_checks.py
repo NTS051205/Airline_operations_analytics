@@ -141,7 +141,7 @@ def profile_anomalies(df: DataFrame) -> dict[str, dict[str, int]]:
 
     confirmed_invalid: dict[str, Column] = {
         "year_outside_2025": is_present("YEAR") & (year != EXPECTED_YEAR),
-        "month_outside_mvp_scope": is_present("MONTH")
+        "month_outside_configured_scope": is_present("MONTH")
         & (~month.isin(*EXPECTED_MONTHS)),
         "day_of_week_outside_1_7": is_present("DAY_OF_WEEK")
         & (~day_of_week.between(1, 7)),

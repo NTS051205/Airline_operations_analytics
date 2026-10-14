@@ -21,6 +21,12 @@ DOUBLE_MEASURE_COLUMNS = tuple(
 
 CLEANED_COLUMNS = (*EXPECTED_COLUMNS, "_source_file", "flight_status")
 VALID_FLIGHT_STATUSES = ("completed", "cancelled", "diverted", "invalid")
+ESSENTIAL_ARRIVAL_COLUMNS = ("ARR_TIME", "ARR_DELAY", "ARR_DEL15")
+RAW_LINEAGE_COLUMNS = ("_source_file", "_source_year", "_source_month")
+REJECTED_COLUMNS = (
+    *EXPECTED_COLUMNS, *RAW_LINEAGE_COLUMNS, "rejection_reason", "missing_fields",
+)
+REJECTION_REASON = "completed_missing_essential_arrival"
 
 
 def normalized_text(column_name: str) -> Column:
@@ -86,6 +92,41 @@ def clean_flights(raw_df: DataFrame) -> DataFrame:
     return typed_df.withColumn("flight_status", flight_status).select(
         *CLEANED_COLUMNS
     )
+
+
+def classify_arrival_records(raw_df: DataFrame) -> DataFrame:
+    """Classify source missingness once, retaining the original parsed values.
+
+    Cast failures remain a separate, blocking validation on ALL raw records.
+    ARR_DELAY_NEW is deliberately not part of the rejection condition.
+    """
+    completed = F.coalesce(
+        (safe_binary_flag("CANCELLED") == 0)
+        & (safe_binary_flag("DIVERTED") == 0), F.lit(False),
+    )
+    missing = F.filter(
+        F.array(*[
+            F.when(normalized_text(column).isNull(), F.lit(column))
+            for column in ESSENTIAL_ARRIVAL_COLUMNS
+        ]),
+        lambda item: item.isNotNull(),
+    )
+    classified = raw_df.withColumn("missing_fields", missing)
+    return classified.withColumn(
+        "rejection_reason",
+        F.when(completed & (F.size("missing_fields") > 0), F.lit(REJECTION_REASON)),
+    )
+
+
+def split_arrival_records(classified: DataFrame) -> tuple[DataFrame, DataFrame]:
+    """Complementary branches from the same classification, with no joins."""
+    accepted_raw = classified.filter(F.col("rejection_reason").isNull()).select(
+        *EXPECTED_COLUMNS, *RAW_LINEAGE_COLUMNS
+    )
+    rejected = classified.filter(F.col("rejection_reason").isNotNull()).select(
+        *REJECTED_COLUMNS
+    )
+    return accepted_raw, rejected
 
 
 def expected_cleaned_types() -> dict[str, str]:
