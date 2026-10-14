@@ -1,200 +1,268 @@
 # Airline Operations Analytics & Flight Delay Prediction
 
-A Data Analyst / Data Engineer portfolio project turning **1.65 million flight records** into validated operational KPIs and a three-page Power BI dashboard.
+**Turning 7 million BTS flight records into reliable operational KPIs and a three-page Power BI dashboard.**
 
-**Status:** Data processing and SQL analytics completed and runtime-validated. Power BI dashboard built; testing and portfolio polish in progress. Machine Learning is planned, not implemented.
+A Data Analyst portfolio project combining business analysis, Spark SQL and data-quality engineering to understand where flight delays occur and how performance differs across airlines, airports and routes.
 
-## 1. Project Overview
+**Scope:** Data processing, SQL analytics and the dashboard screenshots presented here cover **January–December 2025**. Machine Learning is a planned extension, not a completed deliverable.
 
-Flight delays and cancellations affect both airline operations and passenger experience. This project investigates where observed performance differs across months, airlines, origin airports, directed routes and scheduled departure times.
+[Explore the dashboard](#power-bi-dashboard) · [View results](#dataset--verified-results) · [Browse SQL](sql/analytics) · [Technical documentation](#technical-documentation)
 
-The goal is to distinguish **high delay rates from high flight volumes**, use the right population for each KPI, and provide traceable evidence for further operational investigation—not claim causes or business improvements that have not been measured.
+## Business Problem
 
-The implementation combines schema-aware PySpark processing, readable Spark SQL, Parquet storage and Power BI measures. It runs locally on a 12 GB Windows laptop, without a new data warehouse or orchestration framework.
+A high delay count does not necessarily mean poor relative performance: a busy airline or airport may have more delayed flights simply because it operates more flights. Conversely, a high delay rate based on very few flights can be misleading.
 
-## 2. Dataset
+This project answers four operational questions:
 
-**Source:** U.S. Bureau of Transportation Statistics, [Reporting Carrier On-Time Performance](https://transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=&gnoyr_VQ=FGJ).
+- How do arrival delays and cancellations vary by month?
+- Which airlines and directed routes have high delay rates at meaningful flight volumes?
+- How does arrival performance differ by weekday and scheduled departure time?
+- Which BTS reporting categories account for the largest shares of attributed delay minutes?
 
-| Coverage | Records |
-|---|---:|
-| January 2025 | 539,747 |
-| February 2025 | 504,884 |
-| March 2025 | 600,872 |
-| **Total** | **1,645,503** |
+The objective is to support **evidence-based prioritization for further investigation**, not infer causes or claim unmeasured cost savings.
 
-The input contains 36 BTS columns. Cleaning preserves every record and produces 38 columns, adding source-file lineage and flight status.
+## Power BI Dashboard
 
-- **Completed:** `CANCELLED = 0` and `DIVERTED = 0`.
-- **Cancelled:** `CANCELLED = 1` and `DIVERTED = 0`.
-- **Diverted:** `CANCELLED = 0` and `DIVERTED = 1`.
-- Other flag combinations are invalid under the project contract; none were observed.
+The three-page dashboard moves from system-wide performance to timing patterns and targeted airline, airport and route comparisons. [Power BI files and screenshots](dashboard/) are available in the repository.
 
-A delayed arrival is a completed flight with `ARR_DEL15 = 1` (at least 15 minutes late). “On time” means `ARR_DEL15 = 0`: less than 15 minutes late, including early arrivals.
+**All three screenshots below show the January–December 2025 reporting scope.** They are actual dashboard captures supplied by the project owner. Findings distinguish calculations from saved SQL evidence from observations visible in the dashboard; screenshots alone do not verify every DAX measure or slicer interaction.
 
-See the [data dictionary](docs/data_dictionary.md) for fields and types.
+### Executive Overview
 
-## 3. Data Pipeline & Architecture
+![Executive Overview — January–December 2025 flight performance](dashboard/executive_overview_2025.png)
 
-~~~mermaid
+**Purpose:** Understand the scale of operations and distinguish delay frequency, cancellations and average arrival delay.
+
+- **KPI cards:** Total Flights, Arrival Delay Rate, On-Time Arrival Rate, Cancellation Rate and Average Arrival Delay.
+- **Visuals:** Monthly arrival delay rates, delayed-arrival counts, cancellation rates and completed-flight volume.
+
+**Finding 1 — Delay performance varies substantially by month.** More than one in five completed flights arrived at least 15 minutes late across 2025. July had both the highest monthly delay rate and the most delayed arrivals; September had the lowest rate.
+
+| Month | Delayed / completed flights | Arrival delay rate |
+| --- | ---: | ---: |
+| June | 169,405 / 599,472 | 28.26% |
+| July | 177,012 / 612,811 | 28.89% |
+| September | 92,859 / 558,328 | 16.63% |
+| December | 153,113 / 571,924 | 26.77% |
+
+July exceeded September by **12.25 percentage points**, calculated before rounding the monthly rates. January, rather than July, had the highest cancellation rate: **16,312 / 539,747 = 3.02%**. Arrival delays and cancellations therefore identify different operational concerns.
+
+**Decision implication:** Prioritize investigation of June–July and December while monitoring cancellations independently. The observed pattern is a within-year comparison, not proof of recurring seasonality or a forecast for the following year.
+
+### Delay Analysis
+
+![Delay Analysis — 2025 month-weekday patterns, departure bands and attributed minutes](dashboard/delay_analysis_2025.png)
+
+**Purpose:** Identify observed timing patterns and examine the distribution of reported delay minutes.
+
+- **Visuals:** A month–weekday heatmap, rates and delayed-flight counts by scheduled departure band, and attributed-minute shares by cause.
+
+**Finding 2 — The highest-rate segment is not the highest-volume segment.** The departure-band charts display Evening as the highest-rate group and Afternoon as the group with the largest delayed-arrival count. These represent different priorities: concentrated delay exposure versus the volume of affected flights. The heatmap also shows variation within months, including a displayed **35.95%** arrival delay rate for Sundays in December.
+
+**Metric review boundary:** The departure-band rate chart is titled “Arrival Delay Rate,” but its Y-axis still says “Scheduled Departure Delay Rate.” Its DAX must be confirmed as `SUM(delayed_arrival_flights) / SUM(completed_flights)` with zero-denominator handling before treating the displayed timing comparison as a fully reconciled finding. No precise departure-band rates are inferred from bar lengths here.
+
+**Finding 3 — Late-aircraft and carrier categories dominate reported delay minutes.** Summing the saved monthly source totals gives **111,934,630 attributed delay minutes** across completed flights with `ARR_DEL15 = 1`.
+
+| Reported category | Attributed minutes | Share of annual attributed minutes |
+| --- | ---: | ---: |
+| Late Aircraft | 43,862,971 | 39.19% |
+| Carrier | 36,320,477 | 32.45% |
+| National Airspace System (NAS) | 24,489,666 | 21.88% |
+| Weather | 7,108,714 | 6.35% |
+| Security | 152,802 | 0.14% |
+
+Late Aircraft and Carrier together contribute **80,183,448 / 111,934,630 minutes = 71.63%**. Annual shares use sums of minutes, not averages of monthly shares; rounding individual shares can make their displayed sum differ from 100%.
+
+**Decision implication:** Investigate flight sequencing, aircraft turnaround and carrier operations as hypotheses. These categories describe attributed **minutes**, not percentages of flights, and do not independently establish root causes. A smaller Weather category is not evidence that weather has little direct or indirect operational impact.
+
+### Performance Explorer
+
+![Performance Explorer — 2025 airline rankings, airport volumes and directed route-months](dashboard/performance_explorer_2025.png)
+
+**Purpose:** Compare delay rates alongside flight volume, rather than treating every high-rate group as equally informative.
+
+| View | Interpretation |
+| --- | --- |
+| Top 5 airlines by arrival delay rate | Highest observed rates among airlines with at least **1,000 completed flights** in the selected reporting context |
+| Top origin airports by completed and delayed flights | Two volume comparisons, not a ranking of airport-caused delays |
+| High-delay routes | Directed **route-months** with at least **300 completed flights** each |
+
+Route grain is `YEAR, MONTH, ORIGIN, DEST`: selecting multiple months does not turn these rows into a pooled annual or quarterly ranking. JFK → MVY and MVY → JFK are different routes. Volume thresholds are analytical heuristics, not statistical significance tests.
+
+**Finding 4 — Different comparisons identify different investigation priorities.** F9 and OH lead the displayed airline delay-rate ranking. ORD leads by completed departures, while DFW leads by delayed arrivals among flights departing those airports. A high delayed-flight count alone does not establish the highest delay rate or airport responsibility.
+
+The route table displays **ATL → EWR in May 2025: 451 completed flights and a 64.08% arrival delay rate**. Other leading rows involve MCO → EWR, EWR → ATL and ORD → EWR in May. This cluster warrants investigation by date, carrier and departure band; it does not establish EWR as the cause. These ranking examples are screenshot observations, not separately audited exports, and 64.08% is not an annual route rate.
+
+The standalone SQL airline-ranking query orders the lowest delay rate first; this dashboard highlights the highest rates. The SQL preview's default 30-flight threshold differs from the dashboard's presentation thresholds without changing underlying KPI definitions.
+
+### Proposed Investigation Priorities
+
+| Priority | Proposed action | Evidence and monitoring metrics |
+| --- | --- | --- |
+| High | Investigate June–July and December performance | Elevated monthly rates; monitor delayed/completed counts, arrival delay rate and cancellation rate separately |
+| High | Examine late-aircraft propagation and carrier operations | 71.63% of attributed minutes; track minutes alongside eligible-flight volume and reporting coverage |
+| Medium | Examine Afternoon/Evening schedules after confirming the rate measure | Different displayed rate/volume peaks; compare rates and delayed counts within comparable carriers and routes |
+| Medium | Review the EWR-related May route-month cluster | High displayed route-month rates; retain completed-flight volume, date and direction in comparisons |
+
+These are **investigation priorities**, not an optimized staffing plan or claims of measured improvements. Any intervention should be evaluated against comparable periods or untreated segments, considering traffic volume, route mix and operating conditions. Before–after changes alone do not establish causation; cost savings cannot be estimated without financial data.
+
+**Business takeaway:** Combine delay rates, affected-flight counts and attributed minutes to decide where to investigate first, rather than applying the same response across every month, airport and route.
+
+## Dataset & Verified Results
+
+**Source:** U.S. Bureau of Transportation Statistics — [Reporting Carrier On-Time Performance](https://transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=&gnoyr_VQ=FGJ).
+
+The full-year source contains **7,001,619 records across 12 monthly CSVs**, with 36 selected BTS fields. Each row represents a reported flight record. Cleaning produces 38 columns, including `_source_file` and `flight_status`.
+
+One completed record lacking essential arrival information was separated into a traceable rejected-record output. Raw CSVs remain unchanged; **7,001,618 records** feed full-year analytics.
+
+| Measure | January–December 2025 |
+| --- | ---: |
+| Total analytical flights | 7,001,618 |
+| Completed flights | 6,879,484 |
+| Cancelled flights | 102,876 |
+| Diverted flights | 19,258 |
+| Delayed arrivals | 1,534,638 |
+| On-time arrivals | 5,344,846 |
+| Arrival delay rate | 22.31% |
+| On-time arrival rate | 77.69% |
+| Cancellation rate | 1.47% |
+| Average arrival delay | 8.50 minutes |
+
+Counts come from saved validation evidence. Rates and averages are derived from underlying counts and signed delay sums, displayed to two decimal places—not inferred from rounded screenshots. Monthly comparisons use the core analytics JSON; annual cause-minute shares sum the monthly source totals in the supplementary analytics JSON. Dashboard-only observations are explicitly identified above.
+
+**KPI definitions**
+
+- **Completed:** `CANCELLED = 0 AND DIVERTED = 0`; cancelled and diverted are retained as separate statuses.
+- **Arrival Delay Rate:** completed flights with `ARR_DEL15 = 1` / completed flights. The label represents arrivals at least 15 minutes late.
+- **On-Time Arrival Rate:** completed flights with `ARR_DEL15 = 0` / completed flights. “On time” includes early arrivals and arrivals less than 15 minutes late.
+- **Cancellation / Diversion Rate:** cancelled / total, or diverted / total, respectively.
+- **Average Arrival Delay:** signed `ARR_DELAY` sum / completed flights with observed `ARR_DELAY`. Early arrivals reduce this average; it is not an average over delayed flights only.
+
+Zero denominators return NULL. Across groups or months, rates use **ratios of sums**, not averages of percentages. See [KPI Methodology](docs/kpi_definitions.md) for formulas, grain and interpretation.
+
+## Pipeline & Technical Approach
+
+```mermaid
 flowchart LR
     A["BTS CSV"] --> B["Profiling"]
-    B --> C["Cleaning & Validation"]
-    C --> D["Cleaned Parquet"]
-    D --> E["Spark SQL Aggregates"]
+    B --> C["Cleaning & validation"]
+    C --> R["Rejected records + lineage"]
+    C --> D["Accepted Parquet"]
+    D --> E["Spark SQL aggregates"]
     E --> F["Power BI"]
-    D -.-> G["ML features & Spark MLlib — planned"]
-~~~
+```
 
-**Engineering choices**
+| Technology | Role |
+| --- | --- |
+| Python 3.11 / PySpark 3.5.8 | Ingestion, profiling, typed cleaning and validation |
+| Spark SQL | KPI aggregation, airline rankings, month-over-month comparisons and delay analysis |
+| Parquet / Snappy | Typed analytical storage, partitioned by YEAR/MONTH for cleaned flights |
+| Power BI | KPI presentation, filtering and operational comparisons |
+| Spark MLlib | Planned prediction extension; no model results |
 
-- Validate filenames, headers, sizes and SHA-256 before ingestion; retain `_source_file` for lineage.
-- Preserve conditional NULLs, cancelled/diverted flights, HHmm strings and signed arrival delays. No automatic imputation, deduplication or outlier clipping.
-- Partition cleaned Parquet by `YEAR/MONTH`. Keep small analytical outputs unpartitioned.
-- Use CTEs and `GROUPING SETS` for consistent KPIs; `DENSE_RANK()` for comparisons and `LAG()` with a consecutive-month check for MoM.
-- Retain counts, delay sums and observation counts so rollups use **ratios of sums and weighted averages**, not averages of percentages.
-- Validate schema, counts, grain and values after writing. Do not join or add separate aggregate tables as though they were disjoint flight records.
+The project runs locally on Windows with Java 17 and a 12 GB RAM machine. It does not require a new warehouse, cloud service or orchestration framework.
 
-| Analytical output | Grain | Verified rows |
-|---|---|---:|
-| monthly_performance | YEAR, MONTH | 3 |
-| airline_monthly_performance | YEAR, MONTH, OP_UNIQUE_CARRIER | 42 |
-| origin_airport_monthly_performance | YEAR, MONTH, ORIGIN | 991 |
-| route_monthly_performance | YEAR, MONTH, ORIGIN, DEST | 16,997 |
-| day_of_week | YEAR, MONTH, DAY_OF_WEEK | 21 |
-| departure_time_band | YEAR, MONTH, time_band | 12 |
-| delay_causes | YEAR, MONTH, cause_category | 15 |
+**Selected implementation decisions**
 
-The first four are Parquet outputs under `data/analytics/`; the last three are small CSV outputs under `artifacts/phase3b/`. No flight-level dataset is collected into Pandas.
+- **Explainable SQL:** [Shared KPI query](sql/analytics/000_kpi_summary.sql) uses CTEs and `GROUPING SETS` for consistent monthly, airline, origin-airport and route aggregates. `DENSE_RANK()` supports comparisons; `LAG()` checks consecutive months before reporting MoM changes.
+- **Correct rollups:** Aggregates retain numerators, denominators, signed delay sums and observation counts. Separate grains must not be combined in ways that double-count flights.
+- **Traceable cleaning:** Validate file metadata and locally recorded SHA-256 fingerprints; preserve conditional NULLs, HHmm strings, source lineage and signed delays. No arbitrary imputation, outlier clipping or deduplication.
+- **Explicit rejection policy:** Completed flights missing `ARR_TIME`, `ARR_DELAY` or `ARR_DEL15` are excluded from the analytical dataset but retained separately with source values, missing fields and a rejection reason. Missing `ARR_DELAY_NEW` alone is not a rejection condition.
+- **Appropriate outputs:** Four core Parquet aggregates and three supplementary CSV summaries. Only small summaries are collected to the driver; no flight-level `toPandas()`.
 
-## 4. Power BI Dashboard & Business Insights
+## Data Quality & Validation
 
-Three pages have been built by the project owner. The saved [Power BI report](dashboard/Airline_Operations_Analytics_final.pbix) contains Executive Overview, Delay Analysis and Performance Explorer, matching the screenshots below. Final filter-context reconciliation and presentation review are still in progress.
+Full-year cleaning and both analytical runners have saved **PASS** evidence:
 
-The screenshots below are captures of the implemented dashboard, saved under `assets/`. Images under `docs/mockups/` remain design concepts and are not used as implementation evidence.
+| Validation layer | Recorded result |
+| --- | --- |
+| Record accounting | 7,001,619 raw = 7,001,618 cleaned + 1 rejected |
+| Cleaning | 24/24 pre-write and 17/17 read-back checks passed |
+| Core SQL analytics | All four aggregate tables passed pre-write and Parquet read-back validation |
+| Supplementary analytics | 97/97 checks passed; all three CSV outputs passed read-back |
+| January–March regression | All four core and three supplementary aggregates passed, with zero reported mismatches |
 
-**Interaction note:** The Month slicer controls the intended reporting period. Dashboard **Key Findings text is static** and does not automatically change with the slicer. Treat those statements as explicitly scoped Jan–Mar observations, not dynamic summaries.
+Checks cover monthly/status reconciliation, schema, grain uniqueness, label validity, nonnegative counts, KPI formulas and NULL handling. Parquet read-back includes bidirectional `EXCEPT ALL`; regression compares keys/counts exactly and DOUBLE values with a small numeric tolerance.
 
-### Page 1 — Executive Overview
+Evidence is stored locally in `artifacts/phase2_2025_reviewed/validation_summary.json`, `artifacts/phase3_2025_reviewed/validation_summary.json` and `artifacts/phase3b_2025_reviewed/validation_summary.json`. Historical dashboard evidence is retained under `artifacts/phase3/` and `artifacts/phase3b/`. These local artifacts are excluded from Git; the figures above summarize existing runs, not a newly executed benchmark.
 
-![Executive Overview — total flights, arrival performance and monthly trends](assets/dashboard_1.png)
+## Repository & Reproduction
 
-**Purpose:** Summarize overall operations and show why delay frequency, cancellation frequency and average delay answer different questions.
+```text
+scripts/                  Pipeline entry points and diagnostic utilities
+src/airline_analytics/     Schema, ingestion, cleaning and validation
+sql/analytics/            KPI queries and business analyses (000–010)
+docs/                     Technical methodology and historical findings
+dashboard/                Power BI reports and full-year dashboard screenshots
+assets/                   Retained historical January–March screenshots
+data/                     Local CSV, Parquet and core aggregates
+artifacts/                Local validation reports and supplementary outputs
+```
 
-**Core KPI cards:** Total Flights, Arrival Delay Rate, On-Time Arrival Rate, Cancellation Rate and Average Arrival Delay.
+### Environment
 
-**Visuals:** Monthly arrival-delay line chart, cancellation-rate columns, business findings and KPI definitions.
+Use Python 3.11, Java 17 with `JAVA_HOME`, and [requirements.txt](requirements.txt). Windows Parquet execution also requires the working Hadoop utilities configuration used for this project. Do not obtain native binaries from unverified sources.
 
-| Month | Delayed / completed flights | Arrival delay rate | Cancelled / total flights | Cancellation rate |
-|---|---:|---:|---:|---:|
-| January | 98,130 / 522,269 | 18.79% | 16,312 / 539,747 | 3.02% |
-| February | 103,102 / 496,476 | 20.77% | 7,405 / 504,884 | 1.47% |
-| March | 116,034 / 592,301 | 19.59% | 6,923 / 600,872 | 1.15% |
+From the repository root, create a virtual environment if needed:
 
-**Finding:** February has the highest observed arrival delay rate. March has more delayed arrivals but a lower rate because its completed-flight population is larger. Cancellation rates fall across the three observed months; this is not evidence of a long-term trend.
-
-Source: Phase 3A validation JSON, summarized in [KPI definitions and findings](docs/kpi_definitions.md).
-
-### Page 2 — Delay Analysis
-
-![Delay Analysis — weekday, scheduled departure and attributed delay-minute shares](assets/dashboard_2.png)
-
-**Purpose:** Explore when delays are observed and how BTS reporting categories contribute to attributed delay minutes.
-
-**Visuals:** Arrival delay rate by weekday, rate by scheduled departure band, and horizontal bars for attributed delay-minute shares.
-
-- **Weekday patterns vary by month.** The highest-rate weekday is Monday in January (16,002 / 70,684 = **22.64%**), Thursday in February (21,753 / 76,272 = **28.52%**) and Sunday in March (25,738 / 98,176 = **26.22%**).
-- **Evening has the highest observed rate in each month.** Its delayed/completed counts are 24,554 / 108,886 (**22.55%**), 27,018 / 106,095 (**25.47%**) and 36,344 / 137,594 (**26.41%**), respectively. This does not establish that later departures cause delays.
-- **The largest attributed-minute category changes.** Carrier delay leads January at 2,510,886 / 6,943,994 minutes (**36.16%**). Late-aircraft delay leads February at 2,735,511 / 7,411,011 (**36.91%**) and March at 3,281,080 / 8,378,368 (**39.16%**).
-
-Time bands use scheduled local departure time, not actual departure time. Cause analysis includes only completed flights with `ARR_DEL15 = 1`. **A cause-minute share is not a percentage of delayed flights**; one flight can have multiple reporting categories.
-
-Source and full comparisons: [Phase 3B findings](docs/phase3b_findings.md).
-
-### Page 3 — Performance Explorer
-
-![Performance Explorer — airlines, origin-airport volume and directed route-months](assets/dashboard_3.png)
-
-**Purpose:** Compare operational outcomes alongside flight volume without treating a small group's high rate as conclusive evidence.
-
-| Visualization | Measure and interpretation |
-|---|---|
-| Top 5 airlines by arrival delay rate | Highest observed rates, with a minimum of **1,000 completed flights** in the dashboard's selected reporting context |
-| Top 5 origin airports by completed volume | Number of completed departures, not a delay-rate ranking or a measure of airport-caused delays |
-| High-delay directed routes | Individual **YEAR, MONTH, ORIGIN, DEST** rows with at least **300 completed flights per route-month** |
-
-Even with all three months selected, route rows remain **route-months**, not a pooled quarterly route ranking. A → B and B → A are separate routes.
-
-The owner-supplied review screenshot shows OH leading the displayed airline delay-rate comparison and DEN leading origin completed-flight volume. Its February BNA → DCA row displays **303 completed flights and a 50.50% delay rate**. These are dashboard snapshot observations; exported numerators, exact airline/airport counts and filter-context reconciliation are still pending before final Phase 4 sign-off.
-
-The dashboard thresholds are analytical heuristics, not significance tests. They differ from the earlier SQL preview's default 30-flight threshold. The standalone SQL airline ranking orders lowest delay rate first; this dashboard deliberately highlights the highest rates. Neither changes the underlying aggregate counts.
-
-## 5. Project Structure & How to Run
-
-~~~text
-airline_operations_analytics/
-├── README.md
-├── MASTER_PROMPT.md
-├── requirements.txt
-├── scripts/                    # Profiling, cleaning, analytics and Parquet smoke test
-├── src/airline_analytics/       # Schema, ingestion, profiling, cleaning and validation
-├── sql/analytics/              # 000–010: KPI summaries and business queries
-├── docs/                       # Data dictionary, quality reports, definitions and findings
-├── dashboard/                  # Final three-page PBIX report
-├── assets/                     # Actual dashboard screenshots embedded above
-├── data/                       # Local raw, processed and analytical datasets
-└── artifacts/                  # Local validation JSON and supplementary CSV outputs
-~~~
-
-### Environment and input
-
-Use Python 3.11, Java 17 with `JAVA_HOME` configured, and the dependencies in [requirements.txt](requirements.txt). The following PowerShell commands are **owner-run instructions**, not automatically executed steps.
-
-From the repository root, create a virtual environment only if one does not already exist:
-
-~~~powershell
+```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-~~~
 
-Download the three monthly CSVs from BTS and place them under `data/raw/` as `reporting_carrier_ontime_2025_01.csv`, `reporting_carrier_ontime_2025_02.csv` and `reporting_carrier_ontime_2025_03.csv`. Use the selected fields in the data dictionary. Ingestion enforces the exact original export metadata in [schema.py](src/airline_analytics/schema.py); a re-export with different bytes must be independently reviewed rather than bypassing checksum validation.
-
-### Run the processing stages
-
-Configure the current PowerShell session:
-
-~~~powershell
 $projectPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
 $sparkSubmit = (Resolve-Path ".\.venv\Scripts\spark-submit.cmd").Path
 $env:PYSPARK_PYTHON = $projectPython
 $env:PYSPARK_DRIVER_PYTHON = $projectPython
 $env:PYTHONPATH = (Resolve-Path ".\src").Path
-$sparkOptions = @("--master", "local[2]", "--driver-memory", "4g")
-~~~
+$sparkOptions = @("--master", "local[1]", "--driver-memory", "3g")
+```
 
-Run **one command at a time**, inspect its report, and stop if `$LASTEXITCODE` is nonzero. Defaults use the paths shown above and each stage consumes the previous stage's evidence where required.
+### Execution entry points
 
-~~~powershell
-# 1. Raw profiling
-& $sparkSubmit @sparkOptions ".\scripts\profile_raw_data.py"
+| Step | Script |
+| --- | --- |
+| Validate and profile raw CSVs | [profile_raw_data.py](scripts/profile_raw_data.py) |
+| Investigate missing arrival fields | [diagnose_arrival_missing.py](scripts/diagnose_arrival_missing.py) |
+| Write accepted/rejected outputs and validate | [build_cleaned_parquet.py](scripts/build_cleaned_parquet.py) |
+| Build core aggregates and preview business queries | [build_analytics.py](scripts/build_analytics.py) |
+| Build weekday, departure-band and cause summaries | [run_phase3b.py](scripts/run_phase3b.py) |
 
-# 2. Optional first-time Windows Parquet environment check
-& $sparkSubmit @sparkOptions ".\scripts\smoke_test_parquet.py"
+The current configuration expects twelve files named `reporting_carrier_ontime_2025_01.csv` through `reporting_carrier_ontime_2025_12.csv` with the fields in the [data dictionary](docs/data_dictionary.md). File fingerprints are specific to the reviewed exports; different exports require review.
 
-# 3. Typed cleaning and Parquet validation
-& $sparkSubmit @sparkOptions ".\scripts\build_cleaned_parquet.py"
+**Reproduction prerequisites:** Datasets, diagnostic approvals, validation JSON and historical January–March regression references are not bundled with the repository. Current full-year runners require these inputs; a fresh clone is not a one-command end-to-end run. Cleaning explicitly requires `--approved-diagnostic`. Inspect each script's `--help` for its paths and dependencies.
 
-# 4. Four core aggregate tables and bounded business-query previews
-& $sparkSubmit @sparkOptions ".\scripts\build_analytics.py"
+For example, with the reviewed cleaned Parquet, Phase 2 evidence and MVP core aggregates already available, rebuild core analytics into new paths:
 
-# 5. Weekday, departure-band and cause-minute analysis
-& $sparkSubmit @sparkOptions ".\scripts\run_phase3b.py"
-~~~
+```powershell
+& $sparkSubmit @sparkOptions ".\scripts\build_analytics.py" `
+    --input-dir ".\data\processed\flights_cleaned_2025_reviewed" `
+    --phase2-report ".\artifacts\phase2_2025_reviewed\validation_summary.json" `
+    --mvp-analytics-dir ".\data\analytics" `
+    --output-dir ".\data\analytics\2025_reviewed_rerun" `
+    --validation-output ".\artifacts\phase3_2025_rerun\validation_summary.json"
 
-Large datasets, local evidence and environment files are excluded by [.gitignore](.gitignore). Cleaning, smoke-test and analytics scripts refuse existing output paths; choose fresh paths through their CLI arguments for a deliberate rerun. The raw profiler writes its specified JSON path, so preserve existing evidence before rerunning it. Do not automatically delete prior outputs.
+if ($LASTEXITCODE -ne 0) { throw "Analytics failed; review the validation report." }
+```
 
-### Open the dashboard
+Existing outputs are refused, not silently overwritten. Preserve prior evidence and choose fresh paths for deliberate reruns. In Power BI Desktop, update local Power Query paths before refreshing; generated Spark part filenames may differ between runs.
 
-Open [Airline_Operations_Analytics_final.pbix](dashboard/Airline_Operations_Analytics_final.pbix) in Power BI Desktop. The dashboard uses local Parquet/CSV outputs; check and update Power Query source paths to your own generated files before refresh. A new Spark run may produce different part filenames.
+## Technical Documentation
 
-The saved PBIX report layout contains all three documented pages. No PBIP project is currently present in the repository. Checking the saved page layout and screenshots confirms page availability, not successful refresh, DAX correctness in every filter context or slicer behavior.
+- [Data Dictionary](docs/data_dictionary.md) — fields, types, units and conditional NULLs.
+- [Data Quality Report](docs/data_quality_report.md) — profiling rules and their limitations.
+- [Cleaning Report](docs/phase2_cleaning_report.md) — type handling, lineage and Parquet validation.
+- [KPI Methodology](docs/kpi_definitions.md) — populations, formulas, SQL logic and rollup pitfalls.
+- [Business Findings](docs/phase3b_findings.md) — weekday, departure-band and cause-minute interpretation.
+
+These detailed reports retain historical January–March findings and implementation context. Their three-month counts are not full-year totals.
+
+## Interpretation & Limitations
+
+- The analytical dataset and illustrated dashboard cover one year. This does not establish a recurring multi-year seasonal pattern.
+- Findings are observational. Airline, airport and route mix can affect comparisons; correlation does not establish causation.
+- Arrival delay rates exclude cancelled/diverted flights and the rejected record. They do not capture every form of passenger disruption.
+- Cause-minute shares are not percentages of delayed flights. Thresholds are adjustable heuristics, not confidence guarantees.
+- Validation covers the implemented checks, not perfect source data or every dashboard filter context. No production performance benchmark or measured financial impact is claimed.
+
+Further work focuses on final measure/filter-context reconciliation and portable refresh instructions. Flight-delay prediction with pre-departure features and temporal evaluation remains a separate planned extension; no ML performance metrics have been established.
