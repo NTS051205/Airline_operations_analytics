@@ -1,306 +1,199 @@
-# Phân tích hiệu suất theo thứ, khung giờ và nhóm nguyên nhân trễ
+# Phân tích theo thứ, khung giờ và nhóm phút trễ
 
-## 1. Câu hỏi nghiệp vụ và phạm vi bằng chứng
+## 1. Phạm vi và nguồn bằng chứng
 
-Arrival Delay Rate toàn kỳ cho biết mức độ trễ chung, nhưng chưa chỉ ra nhóm lịch bay nào cần xem xét sâu hơn. Phase 3B bổ sung ba góc nhìn: ngày trong tuần, giờ khởi hành theo lịch và phần phút trễ được báo cáo cho từng nhóm nguyên nhân.
+Ba phân tích bổ sung trả lời: **lịch bay nào có tỷ lệ trễ cao hơn, nhóm nào có nhiều chuyến bị ảnh hưởng hơn và phút trễ được báo cáo tập trung ở đâu?**
 
-Các phân tích mô tả **những gì đã quan sát trong tháng 01–03/2025**. Chúng không chứng minh nguyên nhân, không dự báo chuyến tiếp theo và chưa đo tác động của một biện pháp cải thiện vận hành.
+Phạm vi chính là **January–December 2025**. Input duy nhất: `data/processed/flights_cleaned_2025_reviewed/`; không đọc lại raw và không đưa rejected records vào KPI.
 
-Nguồn kiểm chứng:
+| Evidence / output local | Vai trò |
+| --- | --- |
+| `artifacts/phase3b_2025_reviewed/validation_summary.json` | Input counts, monthly source totals, validation và Q1 regression |
+| `artifacts/phase3b_2025_reviewed/day_of_week/` | CSV theo YEAR, MONTH, DAY_OF_WEEK |
+| `artifacts/phase3b_2025_reviewed/departure_time_band/` | CSV theo YEAR, MONTH, time_band |
+| `artifacts/phase3b_2025_reviewed/delay_causes/` | CSV theo YEAR, MONTH, cause_category |
+| `artifacts/phase3b/` | CSV/JSON Q1 lịch sử, giữ nguyên cho regression |
 
-- `artifacts/phase3b/validation_summary.json`, được tạo lúc `2026-10-10T06:38:06.713552+00:00`.
-- Các CSV data part trong `artifacts/phase3b/day_of_week/`, `departure_time_band/` và `delay_causes/`, đã được đọc để đối chiếu findings.
-- [run_phase3b.py](../scripts/run_phase3b.py) và SQL 008–010 để xác định logic thực tế.
+Counts và phút trong JSON là kết quả trực tiếp. Tổng năm/share tính từ các monthly source totals được ghi rõ là phép tính suy ra. Nhận xét từ screenshot không thay cho exported rows hoặc kiểm chứng DAX.
 
-Counts, phút và rate/share chưa làm tròn trong CSV là **kết quả trực tiếp**. Các phần trăm dưới đây là cách trình bày fraction nhân 100 và làm tròn hai chữ số. Tổng ba tháng và coverage percentage được ghi rõ là **phép tính suy ra**. Không lấy tỷ lệ đã làm tròn trên dashboard để suy ngược numerator.
+Population input đã đối chiếu: **7.001.618 total**, **6.879.484 completed**, **102.876 cancelled**, **19.258 diverted**, **1.534.638 delayed arrivals**. KPI chung xem [KPI Methodology](kpi_definitions.md).
 
-Đây là tài liệu của lần chạy đã được owner xác nhận thành công, không ghi nhận một lần chạy mới. Phase 3B đã hoàn thành implementation và runtime validation. Dashboard Power BI ba trang hiện đã được xây dựng và đang hoàn thiện; Machine Learning chưa triển khai. Trạng thái “Power BI chưa bắt đầu” trong bản báo cáo lịch sử không còn là trạng thái hiện tại.
+## 2. Day-of-Week Performance
 
-## 2. Input, output và cách tổ chức xử lý
+### Câu hỏi và phương pháp
 
-Input duy nhất là `data/processed/flights_cleaned/`. Runner không đọc lại raw CSV, không chạy lại Phase 1–2 và không xây lại bốn bảng Phase 3A.
+**Ngày nào trong tuần có arrival delay rate cao hơn trong từng tháng?**
 
-| SQL | Grain: một dòng đại diện cho | Output dưới `artifacts/phase3b/` |
-| --- | --- | --- |
-| [008_day_of_week.sql](../sql/analytics/008_day_of_week.sql) | `YEAR, MONTH, DAY_OF_WEEK` | `day_of_week/` |
-| [009_departure_time_band.sql](../sql/analytics/009_departure_time_band.sql) | `YEAR, MONTH, time_band` | `departure_time_band/` |
-| [010_delay_causes.sql](../sql/analytics/010_delay_causes.sql) | `YEAR, MONTH, cause_category` | `delay_causes/` |
-
-Runner tạo temporary view `flights_cleaned` và cache 11 cột cần dùng bằng `MEMORY_AND_DISK`. SQL chịu trách nhiệm phân nhóm/tính toán; Python điều phối validation và xuất CSV. Chỉ các aggregate nhỏ được `collect` để kiểm tra, không thu toàn bộ flight-level dataset về driver và không dùng `toPandas()`.
-
-Mỗi output CSV là một **thư mục Spark** chứa data part và metadata, không phải file mang tên thư mục. CSV phục vụ trao đổi kết quả nhỏ; không thay thế cleaned Parquet. Do CSV không lưu kiểu, read-back dùng schema SQL tường minh và cùng quy ước chuỗi `NULL`.
-
-### Counts nguồn dùng để đối chiếu
-
-Nguồn trực tiếp: `input.by_month` trong JSON.
-
-| Tháng 2025 | Total flights | Completed flights | Delayed completed flights |
-| --- | ---: | ---: | ---: |
-| 01 | 539.747 | 522.269 | 98.130 |
-| 02 | 504.884 | 496.476 | 103.102 |
-| 03 | 600.872 | 592.301 | 116.034 |
-| Tổng ba tháng, suy ra | 1.645.503 | 1.611.046 | 317.266 |
-
-Tổng input 1.645.503 cũng được JSON ghi trực tiếp tại `input.row_count`. Counts cancelled 30.640 và diverted 3.817 thuộc evidence Phase 1–2, không phải hai phép đo tách riêng mới trong JSON Phase 3B.
-
-Định nghĩa population và cách tính KPI chung nằm ở [KPI Methodology](kpi_definitions.md); ý nghĩa trường ở [Data Dictionary](data_dictionary.md).
-
-## 3. Day-of-Week Performance
-
-### 3.1. Câu hỏi và phương pháp
-
-**Ngày nào trong tuần có tỷ lệ đến trễ cao hơn trong từng tháng?**
-
-SQL nhóm theo năm, tháng và `DAY_OF_WEEK`, giữ quy ước BTS: 1 = thứ Hai, …, 7 = Chủ nhật. Một nhóm thứ Hai/tháng là toàn bộ các ngày thứ Hai trong tháng đó, không phải một ngày lịch duy nhất.
-
-~~~sql
-COUNT(CASE WHEN flight_status = 'completed'
-           AND ARR_DEL15 = 1 THEN 1 END)
-~~~
-
-Biểu thức trên đếm delayed completed flights. CASE trả NULL cho dòng không thỏa; COUNT bỏ NULL. Mẫu số được đếm riêng bằng điều kiện completed, không bao gồm cancelled/diverted:
+[008_day_of_week.sql](../sql/analytics/008_day_of_week.sql) nhóm theo YEAR/MONTH/DAY_OF_WEEK; quy ước BTS 1 = thứ Hai, …, 7 = Chủ nhật. Một nhóm là tất cả ngày cùng thứ trong tháng, không phải một ngày lịch duy nhất.
 
 ~~~text
-Arrival Delay Rate của nhóm = delayed completed / completed
+Arrival Delay Rate = completed có ARR_DEL15 = 1 / completed
 ~~~
 
-`NULLIF(completed_flights, 0)` trả tỷ lệ NULL khi không có completed. Total vẫn bao gồm cả ba trạng thái hợp lệ. Nhóm không xuất hiện không được tạo thêm dòng 0 giả.
+Total giữ cả cancelled/diverted; denominator arrival chỉ dùng completed. SQL dùng NULLIF để mẫu số 0 trả NULL. Các nhóm không xuất hiện không được tạo thêm dòng 0 giả.
 
-Output có bảy cột: ba khóa int, ba counts bigint (`total_flights`, `completed_flights`, `delayed_arrival_flights`), và `arrival_delay_rate` double.
+Output giữ ba keys, total/completed/delayed counts và rate. Validation đối chiếu coverage, domain 1–7, unique grain và tổng counts từng tháng.
 
-Validation cộng counts của bảy nhóm để khớp counts nguồn từng tháng. Phase 3B kiểm tra miền 1–7, không tính lại thứ từ `FL_DATE`; kiểm tra nhất quán ngày/thứ đã thuộc Phase 1.
+### Diễn giải count và rate
 
-### 3.2. Kết quả theo tháng
+Ví dụ **Q1 lịch sử** đã được ghi nhận từ CSV `artifacts/phase3b/day_of_week/`:
 
-Đối chiếu cả bảy rate chưa làm tròn trong mỗi tháng cho các nhóm cao nhất/thấp nhất:
+| Nhóm | Delayed / completed | Rate |
+| --- | ---: | ---: |
+| Thứ Hai, January | 16.002 / 70.684 | 22,64% |
+| Thứ Sáu, January | 17.196 / 88.355 | 19,46% |
 
-| Tháng | Vị trí theo rate | Thứ | Delayed / completed | Arrival Delay Rate |
-| --- | --- | --- | ---: | ---: |
-| 01 | Cao nhất | Thứ Hai | 16.002 / 70.684 | 22,64% |
-| 01 | Thấp nhất | Thứ Tư | 10.586 / 79.713 | 13,28% |
-| 02 | Cao nhất | Thứ Năm | 21.753 / 76.272 | 28,52% |
-| 02 | Thấp nhất | Thứ Ba | 10.618 / 65.833 | 16,13% |
-| 03 | Cao nhất | Chủ nhật | 25.738 / 98.176 | 26,22% |
-| 03 | Thấp nhất | Thứ Ba | 9.429 / 72.141 | 13,07% |
+Thứ Sáu có nhiều delayed flights hơn nhưng rate thấp hơn. Count hỗ trợ đánh giá quy mô vấn đề; rate hỗ trợ so sánh tỷ trọng. Không lấy trung bình các weekday rates để ra rate tháng.
 
-Nguồn: CSV `day_of_week/`. Ngày có rate cao nhất thay đổi giữa các tháng; không đủ căn cứ gọi một thứ là “luôn tệ nhất”.
+Heatmap dashboard cả năm cho thấy mức độ trễ thay đổi theo cả tháng và thứ; các ô cao không chứng minh thứ trong tuần gây trễ. Không coi ví dụ Q1 trên là ranking cả năm. Muốn quyết định nguồn lực theo ngày cần counts của chính nhóm, cơ cấu hãng/tuyến/sân bay và các điều kiện vận hành liên quan.
 
-### 3.3. Vì sao count và rate cho thứ hạng khác nhau?
+## 3. Scheduled Departure Time Bands
 
-Thứ Sáu tháng 01 có **17.196 / 88.355 = 19,46%**, nhiều delayed flights hơn thứ Hai (16.002), nhưng rate thấp hơn (22,64%). Count cho biết khối lượng gián đoạn; rate điều chỉnh theo số completed trong nhóm.
+### Vì sao dùng scheduled time?
 
-Số lần xuất hiện của từng thứ, lịch khai thác và quy mô nhóm có thể khác nhau. Không dùng trung bình các weekday percentages để tính rate tháng; phải cộng delayed rồi chia tổng completed.
+[009_departure_time_band.sql](../sql/analytics/009_departure_time_band.sql) dùng `CRS_DEP_TIME`, không dùng `DEP_TIME`. Giờ actual có thể đã dịch chuyển vì trễ; dùng actual để grouping sẽ đổi câu hỏi từ “lịch dự kiến nào” sang “đã khởi hành lúc nào”.
 
-Các findings giúp chọn nhóm cần tìm hiểu tiếp, không khẳng định thứ trong tuần gây trễ. Chưa điều chỉnh khác biệt hãng, sân bay, tuyến, lịch bay hoặc sự kiện thời tiết; chưa kiểm định ý nghĩa thống kê.
+HHmm là giờ địa phương tại sân bay xuất phát, không phải UTC chung.
 
-## 4. Scheduled Departure Time Bands
-
-### 4.1. Vì sao sử dụng scheduled time?
-
-**Tỷ lệ đến trễ khác nhau thế nào giữa các khung giờ khởi hành theo lịch?**
-
-`CRS_DEP_TIME` mô tả lịch dự kiến. Nếu dùng `DEP_TIME` thực tế, một chuyến bị trễ có thể chuyển sang nhóm giờ muộn hơn chính vì đã trễ, làm thay đổi câu hỏi phân tích. Phase 3B giữ cách phân nhóm theo lịch, không thay đổi nguồn.
-
-Giờ là giờ địa phương tại sân bay xuất phát, không phải một trục UTC chung cho mọi sân bay.
-
-| Nhóm | Điều kiện |
+| Nhóm | Quy tắc |
 | --- | --- |
-| Night | `0000–0559`, cộng giá trị chính xác `2400` |
-| Morning | `0600–1159` |
-| Afternoon | `1200–1759` |
-| Evening | `1800–2359` |
-| Missing | `CRS_DEP_TIME IS NULL` |
-| Invalid | Có giá trị nhưng không đúng HHmm bốn chữ số và không phải `2400` |
+| Night | 0000–0559 và giá trị chính xác 2400 |
+| Morning | 0600–1159 |
+| Afternoon | 1200–1759 |
+| Evening | 1800–2359 |
+| Missing | CRS_DEP_TIME IS NULL |
+| Invalid | Có giá trị nhưng sai HHmm bốn chữ số và không phải 2400 |
 
-SQL kiểm tra định dạng trước khi so sánh chuỗi. Với HHmm chuẩn có leading zeros, thứ tự chuỗi phù hợp thứ tự giờ trong ngày. Chuỗi sai định dạng không được tự sửa để lọt vào nhóm hợp lệ. Blank còn sót được xếp Invalid; cleaned input đã chuẩn hóa blank thành NULL.
+SQL kiểm tra format trước khi so sánh chuỗi. `2400` chỉ được gán Night để grouping, không đổi ngày/tháng. Blank còn sót là Invalid; cleaning đã chuẩn hóa blank thành NULL.
 
-`2400` được xếp Night **chỉ để grouping**, không đổi ngày/tháng chuyến bay. `scheduled_2400_flights` theo dõi riêng trường hợp này.
+Output giữ total/completed/delayed, `scheduled_2400_flights` và arrival rate. Missing/Invalid nếu xuất hiện vẫn tham gia reconciliation, không bị loại khỏi total.
 
-### 4.2. Kết quả và numerator/denominator
+### Kết quả và ranh giới diễn giải
 
-Output có tám cột: YEAR/MONTH int, time_band string, ba counts như phân tích weekday, diagnostic count `scheduled_2400_flights` bigint và rate double.
+Trong ví dụ **March 2025 của Q1**, CSV đã ghi:
 
-| Tháng | Khung giờ | Delayed | Completed | Delayed / completed |
-| --- | --- | ---: | ---: | ---: |
-| 01 | Night | 1.811 | 14.430 | 12,55% |
-| 01 | Morning | 32.214 | 207.726 | 15,51% |
-| 01 | Afternoon | 39.551 | 191.227 | 20,68% |
-| 01 | Evening | 24.554 | 108.886 | 22,55% |
-| 02 | Night | 1.781 | 14.282 | 12,47% |
-| 02 | Morning | 32.082 | 195.866 | 16,38% |
-| 02 | Afternoon | 42.221 | 180.233 | 23,43% |
-| 02 | Evening | 27.018 | 106.095 | 25,47% |
-| 03 | Night | 1.732 | 19.989 | 8,66% |
-| 03 | Morning | 30.416 | 228.314 | 13,32% |
-| 03 | Afternoon | 47.542 | 206.404 | 23,03% |
-| 03 | Evening | 36.344 | 137.594 | 26,41% |
+| Khung giờ | Delayed / completed | Arrival delay rate |
+| --- | ---: | ---: |
+| Night | 1.732 / 19.989 | 8,66% |
+| Morning | 30.416 / 228.314 | 13,32% |
+| Afternoon | 47.542 / 206.404 | 23,03% |
+| Evening | 36.344 / 137.594 | 26,41% |
 
-Nguồn: CSV `departure_time_band/`. Trong cả ba tháng, Evening có rate cao nhất và Night thấp nhất. Night có ít completed hơn đáng kể; cần đọc volume cùng rate.
+Evening có rate cao nhất, Afternoon có nhiều delayed flights nhất. Đây là ví dụ March, không phải rates cả năm. Dashboard cả năm cũng hiển thị hai nhóm này ở hai vị trí tương ứng, nhưng exact annual band rates không được suy từ độ dài thanh.
 
-Quan sát này chưa chứng minh khởi hành muộn gây trễ, cũng chưa đủ để khuyến nghị đổi lịch khai thác. Cơ cấu tuyến/hãng/sân bay và các yếu tố khác giữa các khung giờ chưa được kiểm soát.
+Dashboard Power BI đã hoàn tất theo xác nhận của chủ dự án. Định nghĩa của phân tích này là `SUM(delayed_arrival_flights) / SUM(completed_flights)`: đo **arrival** delay theo **scheduled departure band**, không phải departure-delay rate.
 
-### 4.3. Missing, Invalid và 2400
+### Boundary cases cả năm
 
-JSON ghi `missing_times = 0`, `invalid_times = 0` và `midnight_2400 = 0` trong **từng tháng**. Vì vậy chỉ bốn nhóm thông thường xuất hiện mỗi tháng, tổng 12 rows; tất cả `scheduled_2400_flights` trong CSV bằng 0.
+JSON `input.by_month` ghi:
 
-Code có nhánh giữ Missing/Invalid và xử lý 2400, nhưng lần chạy dữ liệu thực này **không kiểm nghiệm các nhánh với số dòng khác 0**. PASS không được diễn giải thành bằng chứng bao phủ mọi edge case.
+- Missing: **0** trong mọi tháng.
+- Invalid: **0** trong mọi tháng.
+- `midnight_2400`: **1 trong July**, các tháng khác 0.
 
-Nếu có Missing/Invalid, chúng vẫn góp vào reconciliation; không bị bỏ để làm biểu đồ đẹp hơn. Mẫu số completed bằng 0 sẽ tạo rate NULL; dữ liệu output lần này không có mẫu số bằng 0.
+Vì vậy câu “không có 2400” chỉ đúng cho **Q1**, không đúng cho cả năm. Có 48 output rows, tương ứng bốn nhóm thông thường trong 12 tháng; 2400 thuộc Night, không tạo nhóm thứ năm.
 
-## 5. Delay Cause Breakdown
+Các nhánh Missing/Invalid vẫn chưa có quan sát khác 0 trong lần chạy này. Không dùng PASS để khẳng định đã kiểm nghiệm runtime mọi edge case.
 
-### 5.1. Câu hỏi và population
+## 4. Delay Cause Breakdown
 
-**Trong các chuyến completed có `ARR_DEL15 = 1`, nhóm nguyên nhân báo cáo nào chiếm nhiều phút trễ nhất?**
+### Câu hỏi và population
 
-| Nhóm | Ý nghĩa báo cáo |
+**Trong completed có ARR_DEL15 = 1, nhóm báo cáo nào chiếm nhiều attributed delay minutes nhất?**
+
+| Cột | Nhóm báo cáo |
 | --- | --- |
-| `CARRIER_DELAY` | Các vấn đề thuộc hoạt động hãng |
-| `WEATHER_DELAY` | Phần phút được quy vào nhóm thời tiết |
-| `NAS_DELAY` | Các yếu tố thuộc National Air System |
-| `SECURITY_DELAY` | An ninh |
-| `LATE_AIRCRAFT_DELAY` | Máy bay phục vụ chặng đến muộn từ chặng trước |
+| CARRIER_DELAY | Hoạt động hãng |
+| WEATHER_DELAY | Thời tiết |
+| NAS_DELAY | Hệ thống hàng không quốc gia |
+| SECURITY_DELAY | An ninh |
+| LATE_AIRCRAFT_DELAY | Máy bay đến muộn từ chặng trước |
 
-Đây là các nhóm được báo cáo trong BTS, không phải nguyên nhân do project suy luận từ mô hình. Không coi riêng WEATHER_DELAY là toàn bộ ảnh hưởng trực tiếp/gián tiếp của thời tiết.
+Các nhóm này là phân loại BTS, không phải nguyên nhân do project tự suy luận. WEATHER_DELAY không đo mọi ảnh hưởng trực tiếp/gián tiếp của thời tiết.
 
-### 5.2. Logic SQL: từ cột nguyên nhân đến tỷ trọng phút
+### Logic và tránh đếm trùng
 
-Query có bốn bước có trách nhiệm riêng:
+[010_delay_causes.sql](../sql/analytics/010_delay_causes.sql) dùng:
 
-1. **`eligible`:** lọc completed và label 1; tạo flags có ít nhất một/tất cả cause fields được báo cáo.
-2. **`expanded`:** `STACK(5, …)` chuyển năm cột thành năm dòng category cho mỗi eligible flight, giữ cả giá trị NULL.
-3. **`category_totals`:** GROUP BY YEAR/MONTH/category để đếm coverage và cộng phút.
-4. **`denominators`:** `SUM(attributed_minutes) OVER (PARTITION BY YEAR, MONTH)` tạo mẫu số chung của tháng mà không làm mất dòng category.
+1. `eligible`: lọc completed, label 1; xác định any/all cause fields được báo cáo.
+2. `STACK(5, …)`: chuyển năm cột cause thành năm category rows cho mỗi chuyến.
+3. GROUP BY tháng/category: COUNT giá trị được báo cáo và SUM phút.
+4. Window SUM theo tháng: giữ grain category-month nhưng có tổng phút tháng làm denominator.
 
 ~~~text
-attributed_minutes(category, month)
-    = SUM(phút được báo cáo của category trên eligible flights)
-
 cause_minute_share
-    = attributed_minutes / NULLIF(monthly_attributed_minutes, 0)
+    = attributed_minutes(category, month)
+      / NULLIF(monthly_attributed_minutes, 0)
 ~~~
 
-Window SUM ở đây cần thiết vì phải vừa giữ grain category-month vừa có tổng tháng trên mỗi dòng. Đó là tổng phút của năm category, **không phải số chuyến trễ** và không phải signed sum ARR_DELAY.
+`eligible_delayed_flights`, any/all coverage và mẫu số tháng lặp trên năm categories. **Không cộng các flight counts lặp này qua categories**. Một chuyến có thể đóng góp phút cho nhiều nhóm.
 
-### 5.3. Schema và nguy cơ đếm trùng
+`reported_cause_flights` đếm non-NULL, gồm cả reported zero; không phải số chuyến có cause minutes > 0. NULL là chưa báo cáo, 0 là giá trị đã báo cáo. SUM bỏ từng NULL; toàn bộ NULL khác tổng bằng 0. Mẫu số NULL/0 tạo share NULL.
 
-Output gồm YEAR/MONTH int, cause_category string và bảy measures sau:
+### Kết quả cả năm
 
-| Measure | Kiểu | Ý nghĩa |
-| --- | --- | --- |
-| `eligible_delayed_flights` | bigint | Số completed có label 1 trong tháng |
-| `reported_cause_flights` | bigint | Eligible có cause field này không NULL, kể cả giá trị 0 |
-| `flights_with_any_reported_cause` | bigint | Eligible có ít nhất một cause field không NULL |
-| `flights_with_all_reported_causes` | bigint | Eligible có cả năm cause fields không NULL |
-| `attributed_minutes` | double | Tổng phút category, tử số |
-| `monthly_attributed_minutes` | double | Tổng phút năm category trong tháng, mẫu số |
-| `cause_minute_share` | double | Tỷ trọng dạng fraction, NULL nếu không xác định |
+Tổng các `minutes_<CATEGORY>` trong 12 dòng `input.by_month` cho:
 
-Eligible count, any/all coverage counts và mẫu số tháng lặp lại trên năm dòng category. **Không cộng những số tháng này qua năm dòng**. Một chuyến có thể đóng góp phút cho nhiều nhóm.
+| Category | Attributed minutes | Share của tổng năm |
+| --- | ---: | ---: |
+| Late Aircraft | 43.862.971 | 39,19% |
+| Carrier | 36.320.477 | 32,45% |
+| NAS | 24.489.666 | 21,88% |
+| Weather | 7.108.714 | 6,35% |
+| Security | 152.802 | 0,14% |
+| **Tổng** | **111.934.630** | **100% trước làm tròn** |
 
-Muốn tính tỷ lệ chuyến có phút dương của một nguyên nhân cần một numerator khác: số chuyến có cause minutes > 0. `reported_cause_flights` không phải numerator đó vì bao gồm reported zero. Project không thay minute share bằng tỷ lệ chuyến.
+Đây là **phép cộng từ monthly evidence**, không average monthly shares. Mỗi share dùng attributed minutes của category chia 111.934.630.
 
-### 5.4. NULL, reported zero và coverage
+Late Aircraft + Carrier: **80.183.448 / 111.934.630 = 71,63%**, tính từ số phút trước làm tròn. Không cộng 39,19% và 32,45% đã làm tròn để công bố 71,64%.
 
-- NULL: không có giá trị được báo cáo; không tự điền 0.
-- 0: đã báo cáo và không có phút ở category đó; vẫn được COUNT(cause_minutes) đếm.
-- `SUM` bỏ từng NULL. Category không có giá trị nào → attributed_minutes NULL và reported count 0.
-- Có reported values nhưng tất cả bằng 0 → tổng phút 0; khác trường hợp không có báo cáo.
-- Tổng tháng NULL hoặc 0 → share NULL, không trình bày như 0% có ý nghĩa.
-- Tháng có eligible flights vẫn có năm category rows; tháng không có eligible không tạo năm dòng giả.
+Carrier dẫn đầu January; Late Aircraft dẫn đầu February và March trong mốc Q1. Không suy ra tỷ trọng cả năm chỉ từ ba tháng đầu. Các kết quả annual hỗ trợ ưu tiên điều tra turnaround, chuỗi chuyến và hoạt động hãng; chưa chứng minh một thay đổi quy trình sẽ giảm bao nhiêu chuyến trễ.
 
-Shares cộng gần 100% khi mẫu số dương không tự chứng minh coverage đầy đủ: đó cũng có thể chỉ là phân bổ của phần phút đã được báo cáo.
+### Reporting coverage
 
-### 5.5. Kết quả từng tháng
+Trong từng tháng, `reported_<CATEGORY>`, `any_reported` và `all_reported` bằng delayed eligible count. Tính toàn năm theo từng category: **1.534.638 / 1.534.638 = 100% non-NULL coverage**, gồm reported zero.
 
-Mẫu số trực tiếp từ CSV: tháng 01 **6.943.994 phút**, tháng 02 **7.411.011 phút**, tháng 03 **8.378.368 phút**. Mỗi ô dưới đây thể hiện tử số phút và tỷ trọng trên mẫu số tháng tương ứng.
+Coverage 100% không có nghĩa mỗi chuyến chịu cả năm nguyên nhân, không bảo đảm phân loại đã giải thích mọi nguyên nhân thực tế. Share phút không phải tỷ lệ flights, và tổng cause minutes không phải signed ARR_DELAY sum của toàn bộ completed.
 
-| Category | Tháng 01: phút (share) | Tháng 02: phút (share) | Tháng 03: phút (share) |
-| --- | ---: | ---: | ---: |
-| CARRIER_DELAY | 2.510.886 (36,16%) | 2.513.734 (33,92%) | 2.761.618 (32,96%) |
-| LATE_AIRCRAFT_DELAY | 2.410.759 (34,72%) | 2.735.511 (36,91%) | 3.281.080 (39,16%) |
-| NAS_DELAY | 1.381.827 (19,90%) | 1.666.833 (22,49%) | 1.832.804 (21,88%) |
-| WEATHER_DELAY | 629.972 (9,07%) | 486.199 (6,56%) | 492.193 (5,87%) |
-| SECURITY_DELAY | 10.550 (0,15%) | 8.734 (0,12%) | 10.673 (0,13%) |
+## 5. Validation, read-back và regression
 
-Ví dụ: `3.281.080 / 8.378.368 ≈ 39,16%` là **tỷ trọng phút trễ** của late-aircraft trong tháng 03, không phải 39,16% chuyến bị trễ do nhóm đó.
+Nguồn: `artifacts/phase3b_2025_reviewed/validation_summary.json`.
 
-Carrier và late-aircraft là hai nhóm lớn nhất trong cả ba tháng. Carrier đứng đầu tháng 01; late-aircraft đứng đầu tháng 02 và 03. Đây là gợi ý nơi cần điều tra vận hành sâu hơn, không chứng minh một biện pháp cụ thể sẽ giảm bao nhiêu chuyến trễ.
-
-### 5.6. Coverage quan sát được
-
-| Tháng | Reported count của từng category / eligible | Any reported | All five reported |
-| --- | ---: | ---: | ---: |
-| 01 | 98.130 / 98.130 | 98.130 | 98.130 |
-| 02 | 103.102 / 103.102 | 103.102 | 103.102 |
-| 03 | 116.034 / 116.034 | 116.034 | 116.034 |
-
-Coverage không NULL là **100% mỗi tháng**, suy ra từ các counts trực tiếp trên, bao gồm reported zero. Không có nghĩa cả năm nguyên nhân đều có phút dương trên mọi chuyến, hoặc báo cáo đã giải thích đầy đủ mọi nguyên nhân thực tế.
-
-Phân tích không đọc `ARR_DELAY` để ép tổng cause minutes bằng signed delay. Hai đại lượng khác population và cách đo; không sử dụng reconciliation giữa chúng nếu chưa có định nghĩa nghiệp vụ phù hợp.
-
-## 6. Validation đã thực hiện và mức đảm bảo
-
-| Kết quả trong evidence | Giá trị |
+| Kết quả | Giá trị cả năm |
 | --- | --- |
-| `overall_status` và input status | PASS |
-| Input rows | 1.645.503 |
-| Runtime | Spark 3.5.8, `local[2]` |
-| Checks | 30/30 có `passed = true` |
-| `failed_checks`, `errors` | Danh sách rỗng |
-| `failure_stage` | NULL |
-| Day-of-week: output/read-back | 21 / 21 rows, PASS |
-| Departure bands: output/read-back | 12 / 12 rows, PASS |
-| Delay causes: output/read-back | 15 / 15 rows, PASS |
+| overall_status | PASS |
+| Input records | 7.001.618 |
+| Checks | 97/97 passed |
+| failed_checks; errors | Rỗng |
+| Day-of-week: output/read-back | 84 / 84 |
+| Departure bands: output/read-back | 48 / 48 |
+| Delay causes: output/read-back | 60 / 60 |
+| Q1 regression | Cả ba outputs PASS, zero mismatches |
+| Runtime | Spark 3.5.8, local[1] |
 
-30/30 là đếm từ checks trong JSON đã lưu. Exit code 0 là owner xác nhận, không phải field trong JSON.
+[run_phase3b.py](../scripts/run_phase3b.py) kiểm tra evidence Phase 2/3A PASS, cùng input path, toàn bộ cleaned schema 38 cột và các trường cần phân tích. Counts total/status theo tháng khớp Phase 2; delayed counts khớp monthly Phase 3A.
 
-Các lớp validation của [runner](../scripts/run_phase3b.py):
+Weekday/band aggregates reconcile với monthly nguồn; kiểm tra unique grain, `0 ≤ delayed ≤ completed ≤ total`, rates/NULL/zero denominator và boundary coverage. Cause validation đối chiếu eligible, coverage, phút, mẫu số và share; không cộng eligible qua categories.
 
-1. Kiểm tra 11 cột đầu vào cần thiết và kiểu, nguồn không rỗng, đúng ba tháng MVP; domain weekday/status/label hợp lệ. Không gọi đây là kiểm tra lại toàn bộ 38 cột.
-2. Cause values khi có phải hữu hạn và không âm; tổng tháng hữu hạn.
-3. Grain duy nhất, nhãn nhóm hợp lệ; `0 ≤ delayed ≤ completed ≤ total`; rate đúng công thức, domain 0–1 và NULL khi mẫu số 0.
-4. Tổng counts weekday/time band theo tháng khớp phép aggregate nguồn riêng. Boundary counts riêng đối chiếu bốn time bands và Missing/Invalid/2400.
-5. Năm cause categories ở tháng có eligible; coverage, phút và mẫu số khớp nguồn; tổng shares gần 1 khi mẫu số dương.
-6. Ghi CSV rồi đọc lại với schema tường minh, header checking, `FAILFAST` và quy ước NULL thống nhất. So sánh cả số dòng và các giá trị cùng multiplicity bằng `Counter` trên aggregate nhỏ.
+CSV không mang schema: read-back dùng schema SQL tường minh, header/FAILFAST và chuỗi NULL thống nhất. Counts và row values/multiplicities được đối chiếu chính xác trên aggregate nhỏ. Q1 regression so keys/counts chính xác, DOUBLE theo absolute tolerance 1E-9 và relative tolerance 1E-12, phân biệt NULL với 0.
 
-Counts và CSV row values/multiplicities so sánh chính xác. Kiểm tra công thức số thực dùng relative tolerance `1E-12` và absolute tolerance `1E-9`; không làm tròn SQL để cưỡng ép khớp.
+Runner chỉ collect các summary có giới hạn, không toàn bộ flights; cache các cột cần thiết và giải phóng khi xong. Output phải là đường dẫn mới, không chồng lên input/evidence/MVP; không tự xóa partial outputs khi lỗi.
 
-Output directory phải là thư mục mới dưới `artifacts/` và không chồng lấn input. Runner từ chối directory đã tồn tại, không overwrite/append hoặc tự xóa partial outputs. Check thất bại làm raise exception; các bước chưa tới không được báo PASS.
+Mốc Q1 lịch sử có 21/12/15 rows và 30/30 checks. Không trộn chúng với counts validation cả năm.
 
-Lần chạy thực tế có mọi completed denominator và monthly-minute denominator dương, không có Missing/Invalid/2400 và không thiếu cause field trong eligible population. Do đó không tuyên bố đã thử runtime mọi nhánh xử lý ngoại lệ. Validation PASS không phải chứng nhận dữ liệu hoàn hảo hay production benchmark.
+## 6. Ý nghĩa kinh doanh và giới hạn
 
-## 7. Tổng hợp findings và giới hạn diễn giải
-
-Ba kết luận mô tả có đủ evidence:
-
-- **Theo thứ:** nhóm có rate cao nhất thay đổi giữa tháng 01, 02, 03. Count cao nhất không nhất thiết rate cao nhất.
-- **Theo scheduled time:** Evening có rate cao nhất và Night thấp nhất trong cả ba tháng quan sát; quy mô các nhóm khác nhau.
-- **Theo cause minutes:** Carrier và late-aircraft chiếm hai phần lớn nhất mỗi tháng; late-aircraft đứng đầu trong tháng 02–03.
-
-Giới hạn chung:
-
-- Chỉ ba tháng, chưa đủ kết luận mùa vụ lặp lại hoặc xu hướng dài hạn.
-- Không kiểm soát cơ cấu hãng/tuyến/sân bay, không thực hiện causal inference hoặc kiểm định thống kê.
-- Arrival delay rates chỉ xét completed, không bao quát mức gián đoạn do cancelled/diverted hay tác động lên hành khách.
-- Cause-minute share là phân bố phút được quy theo báo cáo, không phải xác suất một chuyến bị trễ.
-- Không có chi phí, doanh thu hoặc số hành khách để lượng hóa business impact tài chính.
-- Các findings là snapshot phạm vi đã nêu. Text Key Findings trên dashboard là static, không tự đổi theo Month Slicer; không diễn giải nó như nhận xét động cho mọi filter context.
-- Dashboard đã được xây dựng nhưng tài liệu này không chứng minh mọi DAX measure hoặc tương tác slicer đã được đối chiếu. Không có ML performance results.
-
-Hướng dẫn chạy được giữ tại [README](../README.md), không lặp nguyên khối setup trong tài liệu findings. Không cần chạy lại pipeline để sử dụng các bằng chứng hiện có.
-
-## 8. Câu hỏi phỏng vấn gắn với phân tích
-
-- **Vì sao dùng CRS_DEP_TIME thay DEP_TIME?** Để phân nhóm theo lịch dự kiến; actual time có thể đã bị dịch chuyển bởi sự trễ đang nghiên cứu.
-- **Vì sao 100% reporting coverage không đồng nghĩa mọi chuyến chịu mọi nguyên nhân?** COUNT không NULL bao gồm reported zero; cần numerator phút dương khác nếu hỏi tỷ lệ chuyến bị ảnh hưởng.
-- **Vì sao window SUM phù hợp ở delay causes?** Cần tổng tháng làm mẫu số trong khi giữ grain category-month.
-- **30/30 checks PASS chứng minh gì?** Kết quả thỏa các hợp đồng đã kiểm tra trên dữ liệu quan sát; không chứng minh nhân quả hay bao phủ các edge cases không xuất hiện.
+- **Rate và volume cần đọc cùng nhau:** một nhóm rate cao chưa chắc ảnh hưởng nhiều chuyến nhất.
+- **Timing là phân đoạn quan sát:** chênh lệch theo thứ/khung giờ chưa tách ảnh hưởng hãng, tuyến, sân bay hay điều kiện vận hành.
+- **Cause minutes khoanh vùng điều tra:** hai nhóm lớn nhất chiếm 71,63% phút được phân loại, không chứng minh quyền kiểm soát hoàn toàn hoặc mức tiết kiệm.
+- Một năm không đủ xác lập mùa vụ lặp lại; không có dữ liệu chi phí/hành khách để lượng hóa tác động tài chính.
+- Arrival rate không bao phủ gián đoạn do hủy/chuyển hướng; đọc cùng cancellation/diversion.
+- SQL evidence và xác nhận hoàn tất Power BI là hai nguồn kiểm chứng khác nhau. Text findings tĩnh không tự đổi theo Month slicer.
 
 ## Những điểm cần ghi nhớ
 
-- So sánh count và rate cùng nhau; rate luôn đi kèm population và denominator.
-- Weekday/time bands dùng completed làm mẫu số, không tự loại dòng khỏi total.
-- Scheduled time là giờ địa phương; Missing, Invalid và 2400 đều có 0 dòng quan sát trong lần chạy này.
-- Delay-cause share đo phút, không đo tỷ lệ chuyến; NULL khác reported zero.
-- Kết quả validation và findings là evidence lịch sử đã lưu, không phải pipeline vừa chạy lại.
+- Giữ đúng numerator/denominator khi đổi phạm vi lọc.
+- Dùng scheduled time để phân nhóm lịch bay; không nhầm với departure-delay metric.
+- Cả năm có một scheduled 2400, dù Q1 không có.
+- Minute share, reporting coverage và tỷ lệ chuyến là ba khái niệm khác nhau.
+- Quan sát giúp chọn nơi điều tra, chưa chứng minh nhân quả hay hiệu quả can thiệp.

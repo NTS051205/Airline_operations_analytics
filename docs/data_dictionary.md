@@ -4,18 +4,16 @@
 
 Một chuyến bay đến trễ, bị hủy và chuyển hướng là ba kết quả vận hành khác nhau. Nếu chỉ nhìn một cột thời gian trễ, người phân tích có thể nhầm chuyến không có thông tin đến nơi thành chuyến đúng giờ. Tài liệu này xác định ý nghĩa của từng nhóm trường trước khi áp dụng [quy tắc chất lượng](data_quality_report.md), [cleaning](phase2_cleaning_report.md) và [KPI](kpi_definitions.md).
 
-Dataset **BTS Reporting Carrier On-Time Performance** chứa thông tin lịch bay, hoạt động thực tế và kết quả vận hành của các chuyến bay do hãng báo cáo. MVP sử dụng ba file CSV tháng 01–03/2025, không đại diện cho toàn bộ hoạt động hàng không trên thế giới hay cả năm 2025.
+Dataset **BTS Reporting Carrier On-Time Performance** chứa thông tin lịch bay, hoạt động thực tế và kết quả vận hành của các chuyến bay do hãng báo cáo. Phạm vi hiện tại là 12 file CSV tháng 01–12/2025. Đây là dữ liệu của chương trình báo cáo BTS, không đại diện cho toàn bộ hoạt động hàng không trên thế giới.
 
 **Grain** là đơn vị mà một dòng dữ liệu đại diện: ở đây là một chặng bay được báo cáo trong một ngày, kể cả chặng bị hủy hoặc chuyển hướng. Một dòng không phải một hành khách, một máy bay hay toàn bộ hành trình nhiều chặng. `OP_CARRIER_FL_NUM` có thể lặp lại giữa ngày và hãng, nên không phải khóa duy nhất.
 
-| Phạm vi | Số bản ghi |
-| --- | ---: |
-| Tháng 01/2025 | 539.747 |
-| Tháng 02/2025 | 504.884 |
-| Tháng 03/2025 | 600.872 |
-| Tổng | 1.645.503 |
+| Phạm vi | Raw records | Cleaned analytical records |
+| --- | ---: | ---: |
+| January–December 2025 | 7.001.619 | 7.001.618 |
+| January–March 2025 — mốc MVP/regression | 1.645.503 | 1.645.503 |
 
-Nguồn trực tiếp: `artifacts/phase1/profile_summary.json → row_counts`. Cleaned Parquet giữ nguyên số dòng này, được đối chiếu tại `artifacts/phase2/validation_summary.json`.
+Nguồn: `artifacts/phase1_2025/profile_summary.json` và `artifacts/phase2_2025_reviewed/validation_summary.json`. Một completed flight thiếu thông tin arrival thiết yếu được giữ riêng trong rejected output; raw không thay đổi. Số liệu Q1 là mốc lịch sử, không phải tổng cả năm.
 
 ## 2. Ba lớp schema cần phân biệt
 
@@ -29,8 +27,8 @@ Kiểu trong các bảng bên dưới là **kiểu cleaned đã được read-ba
 
 | Cột | Kiểu cleaned | Ý nghĩa và cách sử dụng |
 | --- | --- | --- |
-| `YEAR` | `int` | Năm của ngày bay; MVP chỉ có 2025. Cùng `MONTH` xác định kỳ phân tích. |
-| `MONTH` | `int` | Tháng của ngày bay, trong MVP là 1–3. Không nhóm chỉ theo tháng khi mở rộng nhiều năm. |
+| `YEAR` | `int` | Năm của ngày bay; phạm vi hiện tại là 2025. Cùng `MONTH` xác định kỳ phân tích. |
+| `MONTH` | `int` | Tháng của ngày bay, phạm vi hiện tại là 1–12. Không nhóm chỉ theo tháng khi mở rộng nhiều năm. |
 | `DAY_OF_WEEK` | `int` | Quy ước BTS: 1 = thứ Hai, …, 7 = Chủ nhật. Không dùng trực tiếp cách đánh số mặc định của Spark mà bỏ qua quy đổi. |
 | `FL_DATE` | `date` | Ngày bay. Parse nguồn theo `M/d/yyyy h:mm:ss a` rồi lấy phần ngày; không phải timestamp khởi hành thực tế. |
 
@@ -42,10 +40,10 @@ Phase 1 kiểm tra năm/tháng/thứ khớp `FL_DATE` và tháng nguồn. Điề
 | --- | --- | --- |
 | `OP_UNIQUE_CARRIER` | `string` | Mã hãng **khai thác** chuyến bay, là chiều phân tích airline; không tự đồng nhất với hãng bán vé. |
 | `OP_CARRIER_AIRLINE_ID` | `int` | Mã định danh hãng của BTS/DOT. Là định danh, không phải đại lượng để lấy trung bình. |
-| `TAIL_NUM` | `string` | Số đăng ký máy bay; có thể thiếu. Không mặc định chắc chắn có sẵn tại mọi thời điểm dự báo trước khởi hành. |
+| `TAIL_NUM` | `string` | Số đăng ký máy bay; có thể thiếu. Không phải định danh duy nhất của một chuyến. |
 | `OP_CARRIER_FL_NUM` | `string` | Số hiệu chuyến trong hãng. Giữ dạng định danh, không dùng như số đo liên tục. |
 
-Profiling quan sát 14 mã hãng không NULL. Số mã hãng không đồng nghĩa 14 nhóm có cùng quy mô, lịch bay hay mạng tuyến; so sánh hiệu suất cần cả count và rate.
+Mã hãng xác định nhóm khai thác, không bảo đảm các nhóm có cùng quy mô, lịch bay hay mạng tuyến; so sánh hiệu suất cần cả count và rate.
 
 ### 2.3. Điểm đi, điểm đến và khoảng cách
 
@@ -87,7 +85,7 @@ Ví dụ minh họa định nghĩa, không phải kết quả mới: nếu `ARR_
 
 Giá trị `"0829"` phải giữ số 0 đầu. Chuyển thành integer `829` vừa mất biểu diễn chuẩn, vừa làm so sánh chuỗi không còn đáng tin. Phase 2 chỉ trim khoảng trắng, **không thêm số 0 để tự sửa giờ thiếu chữ số**.
 
-Giờ ở dạng HHmm là giờ địa phương của điểm liên quan, chưa chứa đủ ngày và múi giờ để tính khoảng thời gian giữa hai sân bay. Không lấy `ARR_TIME - DEP_TIME` như phép trừ số thông thường. `"2400"` được chấp nhận trong kiểm tra định dạng nhưng không tự chuyển thành timestamp ngày hôm sau. Phase 3B quy nhóm giá trị này vào Night, giữ nguyên ngày/tháng bay; dataset thực tế không có `CRS_DEP_TIME = "2400"`.
+Giờ ở dạng HHmm là giờ địa phương của điểm liên quan, chưa chứa đủ ngày và múi giờ để tính khoảng thời gian giữa hai sân bay. Không lấy `ARR_TIME - DEP_TIME` như phép trừ số thông thường. `"2400"` được chấp nhận trong kiểm tra định dạng nhưng không tự chuyển thành timestamp ngày hôm sau. Phase 3B quy nhóm giá trị này vào Night, giữ nguyên ngày/tháng bay; evidence cả năm ghi **1 trường hợp trong tháng 07/2025**; mốc Q1 có 0. Cả năm không có scheduled time Missing hoặc Invalid.
 
 ### 2.5. Kết quả vận hành và lý do hủy
 
@@ -99,12 +97,12 @@ Giờ ở dạng HHmm là giờ địa phương của điểm liên quan, chưa 
 
 | `CANCELLED` | `DIVERTED` | `flight_status` | Số dòng xác minh |
 | ---: | ---: | --- | ---: |
-| 0 | 0 | `completed` | 1.611.046 |
-| 1 | 0 | `cancelled` | 30.640 |
-| 0 | 1 | `diverted` | 3.817 |
+| 0 | 0 | `completed` | 6.879.484 |
+| 1 | 0 | `cancelled` | 102.876 |
+| 0 | 1 | `diverted` | 19.258 |
 | Tổ hợp khác, kể cả thiếu flag | | `invalid` | 0 |
 
-“Completed” ở đây là định nghĩa phân tích của project: không hủy và không chuyển hướng. Không mở rộng thành nhận định rằng một chuyến diverted không bao giờ hoàn tất hành trình sau đó. Phase 2 giữ cả ba nhóm hợp lệ, không loại cancelled/diverted.
+“Completed” ở đây là định nghĩa phân tích của project: không hủy và không chuyển hướng. Không mở rộng thành nhận định rằng một chuyến diverted không bao giờ hoàn tất hành trình sau đó. Bảng trên đếm cleaned records cả năm. Raw có 6.879.485 completed; một dòng thiếu arrival thiết yếu được tách riêng mà không đổi status. Cleaning không loại cancelled/diverted.
 
 ### 2.6. Phút trễ được quy cho từng nhóm nguyên nhân
 
@@ -133,48 +131,27 @@ Ingestion còn dùng `_source_year` và `_source_month` nội bộ để đối 
 
 ## 3. NULL phải được hiểu trong ngữ cảnh
 
-**Conditional NULL** là giá trị thiếu phù hợp với điều kiện nghiệp vụ, không phải mọi thiếu dữ liệu đều là lỗi.
+**Conditional NULL** là giá trị thiếu phù hợp với điều kiện nghiệp vụ. NULL không đồng nghĩa 0.
 
-- `ARR_DEL15` thiếu 34.457 dòng, bằng 30.640 cancelled + 3.817 diverted. Ngoài phép đối chiếu tổng, Phase 2 đã kiểm tra từng dòng: completed có nhãn 0/1, non-completed không có nhãn; số vi phạm bằng 0.
-- `CANCELLATION_CODE` thiếu ở chuyến không hủy là phù hợp. Điền “unknown” hoặc một mã hủy giả sẽ thay đổi ý nghĩa dữ liệu.
-- Mỗi cột cause thiếu 1.328.237 dòng trong toàn bộ nguồn. Không thể diễn giải con số này như tỷ lệ lỗi. Trong tập eligible của Phase 3B, cả năm trường được báo cáo cho toàn bộ 317.266 chuyến trễ hoàn thành, bao gồm giá trị 0.
-- `TAIL_NUM` thiếu 4.102 dòng. Evidence chưa phân tích nguyên nhân thiếu theo trạng thái; không tự kết luận tất cả đều hợp lệ hoặc đều là lỗi.
+- Raw có **122.135** giá trị thiếu ở mỗi cột `ARR_DELAY`, `ARR_DELAY_NEW`, `ARR_DEL15`. Trong đó 122.134 bằng cancelled + diverted; một completed flight còn lại được diagnostic xác định và tách khỏi analytical dataset.
+- Completed thiếu bất kỳ `ARR_TIME`, `ARR_DELAY` hoặc `ARR_DEL15` bị phân loại rejected. Đây là quy tắc chất lượng của analytical dataset, không phải thay đổi trạng thái chuyến bay.
+- Thiếu riêng `ARR_DELAY_NEW` chỉ được thống kê, không tự điền hoặc loại. Evidence ghi 0 completed chỉ thiếu trường này.
+- `CANCELLATION_CODE` NULL ở chuyến không hủy là phù hợp. Điền mã giả sẽ làm sai ý nghĩa dữ liệu.
+- Raw thiếu **5.466.981** dòng ở mỗi cause field. Trong population eligible của phân tích causes, cả năm trường đều được báo cáo cho 1.534.638 delayed completed flights, bao gồm giá trị 0.
+- `TAIL_NUM` thiếu **12.501** dòng raw; chưa có căn cứ quy toàn bộ missing này cho một nguyên nhân vận hành.
 
-NULL nghĩa là không có giá trị trong ngữ cảnh đang xét; 0 là một giá trị được báo cáo. Hai trạng thái này không thay thế cho nhau.
+Sau cleaning, completed có đủ ba trường arrival thiết yếu và nhãn 0/1. Không áp dụng yêu cầu đó cho cancelled/diverted. Xem [quy tắc Accepted/Rejected](phase2_cleaning_report.md) và [coverage của delay causes](phase3b_findings.md).
 
-## 4. Sử dụng trường cho dự đoán trước khởi hành
+## 4. Căn cứ và giới hạn
 
-Đây là hướng dẫn về **thời điểm có thông tin**, không phải danh sách features đã triển khai. Phase 5 chưa bắt đầu.
+Các định nghĩa kiểu và cách xử lý đối chiếu [schema.py](../src/airline_analytics/schema.py), [ingestion.py](../src/airline_analytics/ingestion.py), [cleaning.py](../src/airline_analytics/cleaning.py) và SQL 000–010. Schema 38 cột được xác minh trong `artifacts/phase2_2025_reviewed/validation_summary.json → read_back.schema`; missingness raw thuộc JSON profiling, còn cause coverage và HHmm boundary thuộc JSON Phase 3B cả năm.
 
-| Nhóm trường | Đánh giá trước giờ khởi hành |
-| --- | --- |
-| Ngày/thứ/tháng, hãng, điểm đi/đến, lịch CRS, khoảng cách | Có thể là ứng viên nếu thực sự biết tại thời điểm dự báo. Cần kiểm tra nguồn lịch có phản ánh thông tin lúc đó hay bản cập nhật sau chuyến. |
-| Số hiệu chuyến, `TAIL_NUM`, các ID | Cân nhắc tính sẵn có, missing và cardinality cao; không mặc định có giá trị dự báo hoặc được mã hóa như số liên tục. |
-| `DEP_TIME`, `ARR_TIME`, `DEP_DELAY`, `DEP_DEL15` | Không dùng trong bài toán dự báo trước khởi hành vì là kết quả thực tế sau mốc dự báo. |
-| `ARR_DELAY`, `ARR_DELAY_NEW`, `ARR_DEL15` | Thông tin kết quả; `ARR_DEL15` có thể là target, không phải feature đầu vào. |
-| `CANCELLED`, `DIVERTED`, `CANCELLATION_CODE`, `flight_status` và năm delay causes | Thông tin kết quả/hậu nghiệm; đưa vào mô hình trước khởi hành có nguy cơ data leakage. |
-| `_source_file` | Dành cho truy vết, không dùng làm feature thay thế một quy tắc chia train/test đúng thời gian. |
-
-**Data leakage** là sử dụng thông tin mà tại thời điểm dự báo chưa thể biết. Chọn tập completed để định nghĩa target khác với đưa trạng thái completed vào đầu vào mô hình. Phạm vi mô hình trên completed flights cũng không tự bao phủ bài toán dự đoán hủy/chuyển hướng.
-
-## 5. Căn cứ và giới hạn
-
-Các mô tả triển khai đối chiếu [schema.py](../src/airline_analytics/schema.py), [ingestion.py](../src/airline_analytics/ingestion.py), [cleaning.py](../src/airline_analytics/cleaning.py) và SQL hiện có. Counts/types là kết quả trực tiếp trong evidence Phase 1–2; diễn giải NULL còn được đối chiếu với evidence Phase 3B.
-
-Bộ dữ liệu không có số hành khách, chi phí chậm chuyến hoặc tác động doanh thu. Không suy ra các đại lượng này từ flight counts. Dictionary cũng không chứng minh mọi mã sân bay/hãng đã được đối chiếu với một danh mục bên ngoài.
-
-Trạng thái hiện tại: các bước xử lý và phân tích Phase 0–3B đã hoàn thành; dashboard Power BI ba trang đã được xây dựng và đang hoàn thiện. Những mô tả “chưa làm dashboard” trong bối cảnh phase cũ chỉ nói phạm vi tại thời điểm đó, không phải trạng thái project hiện tại.
-
-## 6. Câu hỏi phỏng vấn gắn với dữ liệu
-
-- **Vì sao số hiệu chuyến không phải primary key?** Nó lặp theo hãng/ngày/chặng; cần hiểu grain trước khi chọn khóa ứng viên.
-- **Vì sao không dùng `ARR_DELAY_NEW` thay `ARR_DELAY` để tính average?** Một trường bỏ phần đến sớm, trường kia giữ dấu; thay thế làm đổi câu hỏi nghiệp vụ.
-- **Vì sao dữ liệu “đầy đủ hơn” chưa chắc tốt hơn cho ML?** Điền NULL thiếu căn cứ hoặc dùng trường hậu nghiệm có thể tạo nhãn sai và leakage.
+Bộ dữ liệu không cung cấp số hành khách, chi phí chậm chuyến hay tác động doanh thu. Flight counts không thể thay thế các đại lượng này. Dictionary cũng không chứng minh mọi mã hãng/sân bay đã được đối chiếu với danh mục bên ngoài.
 
 ## Những điểm cần ghi nhớ
 
 - Một dòng là một chặng bay được báo cáo; raw có 36 cột, cleaned có 38.
-- Lịch bay, hoạt động thực tế, độ trễ và trạng thái vận hành là các khái niệm khác nhau.
-- HHmm giữ dạng string; NULL, 0 và “không áp dụng” không đồng nghĩa.
-- Kiểu số của ID không biến ID thành đại lượng đo.
-- Feature tương lai phải được đánh giá theo thời điểm thông tin sẵn có, không chỉ theo tương quan.
+- Phân biệt lịch bay, thời gian thực tế, trạng thái và nhãn trễ.
+- HHmm là string; NULL khác 0; ID dạng số không phải đại lượng đo.
+- Luôn xác định population trước khi diễn giải missingness hoặc tính KPI.
+- Counts trong dictionary là cả năm; Q1 chỉ là mốc regression được ghi rõ.
